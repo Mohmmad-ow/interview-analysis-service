@@ -51,16 +51,3 @@ class QuestionAnalysis(BaseModel):
     confidence_level: str = Field(
         ..., pattern="^(high|medium|low)$", description="Overall confidence assessment"
     )
-
-
-class ErrorResponse(BaseModel):
-    error: str = Field(..., description="Error type")
-    detail: str = Field(..., description="Detailed error message")
-    timestamp: datetime = Field(default_factory=datetime.now)
-
-
-class HealthStatus(BaseModel):
-    status: str
-    version: str
-    timestamp: datetime
-    dependencies: Dict[str, bool]
