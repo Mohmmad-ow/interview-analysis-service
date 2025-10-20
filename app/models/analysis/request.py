@@ -19,16 +19,19 @@ class InterviewAnalysisRequest(BaseModel):
         description="Webhook URL for async processing completion", default=None
     )
 
-    class Config:
-        schema_extra = {
-            "example": {
-                "audio_url": "https://example.com/interview.mp3",
-                "job_description": "Senior Python Developer with FastAPI experience...",
-                "questions": [
-                    "What is your experience with microservices?",
-                    "How do you handle errors?",
-                ],
-                "language": "en",
-                "callback_url": "https://api.myapp.com/webhooks/interview-complete",
-            }
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "audio_url": "https://example.com/interview.mp3",
+                    "job_description": "Senior Python Developer with FastAPI experience...",
+                    "questions": [
+                        "What is your experience with microservices?",
+                        "How do you handle errors?",
+                    ],
+                    "language": "en",
+                    "callback_url": "https://api.myapp.com/webhooks/interview-complete",
+                }
+            ]
         }
+    }

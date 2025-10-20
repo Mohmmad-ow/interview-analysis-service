@@ -15,15 +15,18 @@ class AsyncAnalysisResponse(BaseModel):
     )
     status_url: str = Field(..., description="URL to check job status")
 
-    class Config:
-        schema_extra = {
-            "example": {
-                "job_id": "job_123456",
-                "status": "queued",
-                "estimated_wait": 45,
-                "status_url": "/v1/analysis/job_123456/status",
-            }
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "job_123456",
+                    "status": "queued",
+                    "estimated_wait": 45,
+                    "status_url": "/v1/analysis/job_123456/status",
+                }
+            ]
         }
+    }
 
 
 class AnalysisResult(BaseModel):
