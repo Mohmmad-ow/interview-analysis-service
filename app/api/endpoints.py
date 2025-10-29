@@ -1,7 +1,6 @@
 import time
 from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
-
-
+from app.services.GeminiAnalysis import gemini_service
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
 from app.services import whisper_service
 from app.services.auth import auth_service

@@ -12,6 +12,7 @@ from app.models.analysis.response import AnalysisResult
 from app.models.auth import UserContext
 from app.core.logging import log, log_error, log_info
 from app.services.whisper_service import whisper_service
+from app.services.GeminiAnalysis import gemini_service
 
 
 class AnalysisService:
@@ -51,10 +52,10 @@ class AnalysisService:
                 transcript, processing_time = (
                     await whisper_service.transcribe_local_file(request.audio_url)
                 )
-
             # Generate analysis results (you'll replace this with real Gemini analysis later)
-            analysis_result = await self._generate_analysis(
-                transcript, request.job_description
+
+            analysis_result = await gemini_service.analyze_interview(
+                transcript, request.job_description, request.questions
             )
 
             return AnalysisResult(
