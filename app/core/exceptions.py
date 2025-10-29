@@ -4,26 +4,21 @@ from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.services.rate_limiter import RateLimitExceeded
-
-
-import logging
-
-logger = logging.getLogger("cors")
+from app.core.logging import log
 
 
 class CORSLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin")
-
         # Log all requests with Origin header
         if origin:
-            logger.info(f"CORS request from origin: {origin}")
+            log.info(f"CORS request from origin: {origin}")
 
         response = await call_next(request)
 
         # Log if origin was blocked
         if origin and not response.headers.get("access-control-allow-origin"):
-            logger.warning(f"CORS blocked origin: {origin}")
+            log.warning(f"CORS blocked origin: {origin}")
 
         return response
 

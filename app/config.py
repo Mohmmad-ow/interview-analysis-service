@@ -16,7 +16,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "https://localhost:8021"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "https://localhost:8021",
+        "http://127.0.0.1:8000",
+    ]
 
     # Database
     MYSQL_HOST: str = "localhost"
@@ -47,16 +51,23 @@ class Settings(BaseSettings):
     ADMIN_RATE_LIMIT_HOUR: int = 1000
 
     # AI Services
-    WHISPER_MODEL: str = "base"
+
+    # Whisper Configuration
+    WHISPER_MODEL_SIZE: str = "tiny"  # tiny, base, small, medium, large
+    WHISPER_DEVICE: str = "auto"  # auto, cpu, cuda
+    MAX_AUDIO_DURATION: int = 3600  # Max 1 hour audio
+    SUPPORTED_LANGUAGES: List[str] = ["en", "ar"]
+
+    # OpenAI / Gemini API Keys
     GEMINI_API_KEY: Optional[str] = None
-    OPENAI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     # Application
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
     # Pydantic V2 style config
-    model_config: SettingsConfigDict = SettingsConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
     )

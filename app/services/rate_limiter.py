@@ -1,3 +1,4 @@
+from app.core.logging import log
 from typing import Dict
 
 import redis
@@ -55,6 +56,7 @@ class RateLimitService:
 
         # If Redis is down, allow all requests (fail open)
         if not redis_manager.is_connected():
+            log.warning("Redis unavailable, skipping rate limiting")
             return False
 
         redis_client = redis_manager.client
@@ -104,7 +106,7 @@ class RateLimitService:
 
         except redis.RedisError as e:
             # If Redis has issues, allow the request (fail open)
-            print(f"Redis error in rate limiting: {e}")
+            log.error(f"Redis error during rate limiting: {str(e)}", error=str(e))
             return True
 
     async def get_user_limits_info(
@@ -112,12 +114,26 @@ class RateLimitService:
     ) -> Dict:
         """
         Get current rate limit information
+
+        args:
+            user_tier: User's subscription tier
+            user_id: The user's unique identifier
+            endpoint: Which API endpoint they're accessing
+        Returns:
+            Dict: Rate limit usage and remaining requests
+
+        Note:
+            If Redis is unavailable, returns an error indicating rate limiting is disabled.
         """
         if not redis_manager.is_connected():
+
+            log.warning("Redis unavailable, cannot fetch rate limit info")
             return {"error": "redis unavailable", "rate_limiting": "disabled"}
 
         redis_client = redis_manager.client
         if not redis_client:
+
+            log.warning("Redis unavailable, cannot fetch rate limit info")
             return {"error": "redis unavailable", "rate_limiting": "disabled"}
         limits = self.TIER_LIMITS[user_tier]
 
@@ -137,6 +153,13 @@ class RateLimitService:
         minute_ttl = _to_int(redis_client.ttl(minute_key))
         hour_ttl = _to_int(redis_client.ttl(hour_key))
 
+        log.info(
+            "Fetched rate limit info",
+            user_id=user_id,
+            endpoint=endpoint,
+            minute_count=minute_count,
+            hour_count=hour_count,
+        )
         return {
             "user_id": user_id,
             "tier": user_tier.value,

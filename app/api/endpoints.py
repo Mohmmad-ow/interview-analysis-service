@@ -1,14 +1,15 @@
 import time
-from fastapi import APIRouter, status, Depends, HTTPException
+from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
 
 
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
+from app.services import whisper_service
 from app.services.auth import auth_service
 from app.services.rate_limiter import rate_limiter, RateLimitExceeded
-from app.services.analysis_temp import analysis_service
+from app.services.analysis import analysis_service
 from app.models.auth import UserContext, UserTier
 from app.api.dependencies import get_current_user, require_premium, require_admin
-
+from app.core.logging import log
 
 # Create router instance
 router = APIRouter()
@@ -44,6 +45,11 @@ async def analyze_interview_async(
     """
     Asynchronous interview analysis with rate limiting
     """
+    log.info(
+        f"Received async analysis request for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
     try:
         # Check rate limit
         await rate_limiter.check_rate_limit(
@@ -54,6 +60,13 @@ async def analyze_interview_async(
 
         # Queue the job (you'll implement this later)
         job_id = await analysis_service.queue_analysis_job(request, current_user)
+
+        log.info(
+            f"Queued async analysis job for user: {current_user.user_id}",
+            user_id=current_user.user_id,
+            tier=current_user.tier,
+            job_id=job_id,
+        )
 
         return AsyncAnalysisResponse(
             job_id=job_id, status="queued", status_url=f"/v1/analysis/{job_id}/status"
@@ -80,6 +93,12 @@ async def get_rate_limit_info(
     """
     Get current rate limit information for the authenticated user
     """
+
+    log.info(
+        f"Fetching rate limit info for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
     info = await rate_limiter.get_user_limits_info(
         user_id=current_user.user_id, user_tier=current_user.tier, endpoint=endpoint
     )
@@ -144,15 +163,27 @@ async def analyze_interview(
     current_user: UserContext = Depends(get_current_user),
 ):
     """Synchronous interview analysis endpoint"""
-    # Placeholder implementation
-    return AnalysisResult(
-        communication_score=9,
-        technical_score=8,
-        confidence_indicators={"filler_words": 5, "pauses": 3},
-        key_insights=["Excellent problem-solving skills"],
-        processing_time=2.5,
-        transcript="Sample transcript of the interview.",
+    print(request)
+    request.audio_url = request.audio_url.replace("\\\\", "\\")
+    log.info(
+        f"Received async analysis request for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
     )
+    try:
+        # Check rate limit
+        await rate_limiter.check_rate_limit(
+            user_id=current_user.user_id,
+            user_tier=current_user.tier,
+            endpoint="analyze_async",
+        )
+
+        result = await analysis_service.analyze_interview(request, current_user)
+        # return result
+        return result
+
+    except Exception as e:
+        log.error(f"Error when analyzing audio {str(e)}")
 
 
 @router.post("/process")

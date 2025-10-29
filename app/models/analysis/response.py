@@ -44,6 +44,20 @@ class AnalysisResult(BaseModel):
         ..., description="Key observations and recommendations"
     )
     processing_time: float = Field(..., description="Total processing time in seconds")
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "transcript": "the transcript of the interview",
+                    "technical_score": 7.5,
+                    "communication_score": 6.4,
+                    "confidence_indicators": {"straight speech": 9.4},
+                    "key_insights": ["Great Technical Knowledge"],
+                    "processing_time": 65,
+                }
+            ]
+        }
+    }
 
 
 class QuestionAnalysis(BaseModel):
