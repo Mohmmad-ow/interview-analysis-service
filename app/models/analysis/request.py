@@ -1,3 +1,5 @@
+from datetime import datetime
+from enum import Enum
 from pydantic import BaseModel, Field, HttpUrl
 from typing import Optional, List, Dict
 
@@ -35,3 +37,19 @@ class InterviewAnalysisRequest(BaseModel):
             ]
         }
     }
+
+
+class QueuedJobType(str, Enum):
+    PROCESSVIAIDS = "process_via_ids"
+    PROCESSALL = "process_all"
+    PROCESSVIAUSER = "process_via_user"
+    PROCESSVIADATE = "process_via_date"
+
+
+class AsyncProcessQueuedJobs(BaseModel):
+    job_type: QueuedJobType
+    user_id: str
+    job_ids: Optional[List[int]] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    callback_url: Optional[HttpUrl] = None

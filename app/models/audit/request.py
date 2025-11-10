@@ -1,7 +1,12 @@
+from os import error
+from time import timezone
+from annotated_types import Timezone
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import Enum
+
+from sqlalchemy import JSON
 
 
 class AuditAction(str, Enum):
@@ -62,6 +67,31 @@ class AuditLogFilter(BaseModel):
                 "page_size": 100,
             }
         }
+
+
+class AuditLog(BaseModel):
+    user_id: Optional[str] = Field(default=None, description="Filter by specific users")
+    action: Optional[AuditAction] = Field(
+        default=None, description="Filter by action types"
+    )
+    success_only: Optional[bool] = Field(
+        default=None, description="Only successful actions"
+    )
+    timestamp: datetime = Field(
+        description="time of audit creation", default=datetime.now(UTC)
+    )
+    resource_pattern: Optional[str] = Field(
+        default=None, description="LIKE pattern for resource field"
+    )
+    processing_time: Optional[float] = Field(
+        default=None, description="Processing time in seconds"
+    )
+    error_type: Optional[str] = Field(
+        default=None, description="Type of error if applicable"
+    )
+    metadata: Optional[dict] = Field(
+        default=None, description="Additional information as key-value pairs"
+    )
 
 
 class ErrorLogFilter(BaseModel):

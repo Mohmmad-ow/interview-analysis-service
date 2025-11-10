@@ -24,9 +24,9 @@ class Settings(BaseSettings):
 
     # Database
     MYSQL_HOST: str = "localhost"
-    MYSQL_USER: str = "interview_service"
+    MYSQL_USER: str = "root"
     MYSQL_PASSWORD: str = "password"
-    MYSQL_DATABASE: str = "interview_audit"
+    MYSQL_DATABASE: str = "interview-analysis-database"
     MYSQL_PORT: int = 3306
 
     # Redis

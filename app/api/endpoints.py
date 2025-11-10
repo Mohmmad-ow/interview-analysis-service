@@ -1,13 +1,21 @@
 import time
 from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
+from app.database.error_logger import error_logger
+from app.database.audit_logger import audit_logger
+from app.models.analysis.request import AsyncProcessQueuedJobs
 from app.services.GeminiAnalysis import gemini_service
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
 from app.services import whisper_service
 from app.services.auth import auth_service
 from app.services.rate_limiter import rate_limiter, RateLimitExceeded
-from app.services.analysis import analysis_service
+from app.services.analysis import AnalysisService, analysis_service
 from app.models.auth import UserContext, UserTier
-from app.api.dependencies import get_current_user, require_premium, require_admin
+from app.api.dependencies import (
+    get_analysis_service,
+    get_current_user,
+    require_premium,
+    require_admin,
+)
 from app.core.logging import log
 
 # Create router instance
@@ -40,6 +48,7 @@ async def validate_token_endpoint(token: str):
 async def analyze_interview_async(
     request: InterviewAnalysisRequest,
     current_user: UserContext = Depends(get_current_user),
+    analysis_service: AnalysisService = Depends(get_analysis_service),  # ✅ Add this
 ):
     """
     Asynchronous interview analysis with rate limiting
@@ -57,7 +66,7 @@ async def analyze_interview_async(
             endpoint="analyze_async",
         )
 
-        # Queue the job (you'll implement this later)
+        # Queue the job
         job_id = await analysis_service.queue_analysis_job(request, current_user)
 
         log.info(
@@ -74,6 +83,7 @@ async def analyze_interview_async(
     except RateLimitExceeded as e:
         raise e
     except Exception as e:
+        log.error(f"Failed to queue analysis job: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to queue analysis job",
@@ -133,6 +143,9 @@ async def admin_get_rate_limit_info(
 async def analyze_endpoint(
     request: InterviewAnalysisRequest,
     current_user: UserContext = Depends(get_current_user),  # ← INJECTED HERE
+    analysis_service: AnalysisService = Depends(
+        get_analysis_service
+    ),  # ← INJECTED HERE
 ):
     """Endpoint for analysis"""
     return {"message": "Analysis endpoint"}
@@ -162,7 +175,6 @@ async def analyze_interview(
     current_user: UserContext = Depends(get_current_user),
 ):
     """Synchronous interview analysis endpoint"""
-    print(request)
     request.audio_url = request.audio_url.replace("\\\\", "\\")
     log.info(
         f"Received async analysis request for user: {current_user.user_id}",
@@ -178,14 +190,41 @@ async def analyze_interview(
         )
 
         result = await analysis_service.analyze_interview(request, current_user)
-        # return result
+        await audit_logger.log_action(
+            user_id=current_user.user_id,
+            action="analysis_completed",
+            resource=request.audio_url,
+            metadata={"job_description_length": str(len(request.job_description))},
+        )
+
         return result
 
     except Exception as e:
-        log.error(f"Error when analyzing audio {str(e)}")
+        # Capture error with context
+        await error_logger.capture_exception(
+            user_id=current_user.user_id,
+            request_data=request.model_dump(),
+            custom_message="Interview analysis failed",
+        )
+        raise HTTPException(status_code=500, detail="Analysis failed")
 
 
-@router.post("/process")
-async def process_endpoint():
+@router.post(
+    "/process",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Process endpoint",
+    description="Endpoint for processing",
+)
+async def process_endpoint(
+    queued_jobs_request: AsyncProcessQueuedJobs,
+    current_user: UserContext = Depends(get_current_user),
+):
     """Endpoint for processing"""
-    return {"message": "Process endpoint"}
+    try:
+        result = await analysis_service.process_queued_jobs(queued_jobs_request)
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process queued jobs",
+        )

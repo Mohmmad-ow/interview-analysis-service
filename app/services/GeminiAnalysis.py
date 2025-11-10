@@ -51,6 +51,8 @@ class GeminiAnalysis:
         """
         Build the prompt for Gemini analysis
         """
+        # Could customize further based on job role, industry, etc.
+        # {f"SPECIFIC QUESTIONS ASKED: {questions}" if questions else ""}
         base_prompt = f"""
         Analyze this job interview transcript and provide a comprehensive evaluation.
 
@@ -60,21 +62,27 @@ class GeminiAnalysis:
         INTERVIEW TRANSCRIPT:
         {transcript}
 
-        {f"SPECIFIC QUESTIONS ASKED: {questions}" if questions else ""}
+        
+
+        {f"POINTS OF INTEREST TO FOCUS ON: {', '.join(questions)}" if questions else ""}
 
         Please provide analysis in the following JSON format:
         {{
-            "technical_score": 0-10,
-            "communication_score": 0-10,
+            "technical_score": 0.0-10.0,
+            "communication_score": 0.0-10.0,
             "confidence_indicators": {{
-                "clarity": 0-1,
-                "articulation": 0-1,
-                "engagement": 0-1
+                "clarity": 0.0-1.0,
+                "articulation": 0.0-1.0,
+                "engagement": 0.0-1.0
             }},
             "key_insights": [
                 "list of key observations",
                 "strengths and weaknesses",
-                "specific recommendations"
+                "specific recommendations",
+                "add some predictions about candidate fit",
+                "how the candidate compares to typical candidates for this role",
+                "any potential red flags",
+                "areas for improvements",
             ]
         }}
 

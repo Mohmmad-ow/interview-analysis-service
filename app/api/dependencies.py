@@ -4,7 +4,15 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, HTTPBearer
 from app.models.auth.auth import UserContext, UserTier
+from app.services.analysis import AnalysisService
 from app.services.auth import auth_service
+from sqlalchemy.orm import Session
+from app.database.connection import db_manager
+from app.database.repository import AnalysisRepository, AuditRepository
+
+from fastapi import Depends, Request, HTTPException
+from app.database.audit_logger import audit_traffic
+from typing import Generator
 
 
 security = HTTPBearer(auto_error=False)
@@ -52,3 +60,56 @@ def require_tier(required_tier: UserTier):
 # Specific tier dependencies
 require_premium = require_tier(UserTier.PREMIUM)
 require_admin = require_tier(UserTier.ADMIN)
+
+
+async def get_audited_user(
+    request: Request, currentUser: UserContext = Depends(get_current_user)
+) -> str:
+    """
+    Dependency that extracts user_id and sets up audit context
+    """
+    user_id = currentUser.user_id
+
+    # Log the API access
+    with audit_traffic(
+        user_id=user_id,
+        action=f"{request.method} {request.url.path}",
+        resource=request.url.path,
+    ):
+        return user_id
+
+
+def audit_dependency(action: str):
+    """
+    Factory function for creating audit dependencies for specific actions
+    """
+
+    async def _audit_wrapper(
+        request: Request, user_id: str = Depends(get_audited_user)
+    ):
+        with audit_traffic(user_id=user_id, action=action, resource=request.url.path):
+            return user_id
+
+    return _audit_wrapper
+
+
+def get_db_session() -> Session:
+    """Get database session per request"""
+    return db_manager.SessionLocal()
+
+
+def get_analysis_repository(
+    db: Session = Depends(get_db_session),
+) -> AnalysisRepository:
+    return AnalysisRepository(db)
+
+
+def get_audit_repository(db: Session = Depends(get_db_session)) -> AuditRepository:
+    return AuditRepository(db)
+
+
+def get_analysis_service(
+    analysis_repo: AnalysisRepository = Depends(get_analysis_repository),
+    audit_repo: AuditRepository = Depends(get_audit_repository),
+) -> AnalysisService:
+    return AnalysisService(analysis_repo, audit_repo)
