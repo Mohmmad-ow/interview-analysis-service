@@ -116,6 +116,9 @@ class AnalysisService:
                 audio_url=request.audio_url,
                 analysis_result=result,
                 status="completed",  # ✅ Important: mark as queued
+                callback_url=request.callback_url,
+                job_description=request.job_description,
+                questions=request.questions,
             )
             audit_id = auditRes.id
 
@@ -196,6 +199,9 @@ class AnalysisService:
                 audio_url=request.audio_url,
                 analysis_result=queued_result,
                 status="queued",  # ✅ Important: mark as queued
+                callback_url=request.callback_url,
+                job_description=request.job_description,
+                questions=request.questions,
             )
 
             log.info(f"Successfully queued job {job_id} for user {user.user_id}")

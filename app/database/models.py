@@ -1,7 +1,10 @@
+from ast import List
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime, timezone
 import uuid
+
+from app.models import job
 
 Base = declarative_base()
 
@@ -51,6 +54,9 @@ class AnalysisResultDB(Base):
     job_id = Column(String(100), unique=True, nullable=False, index=True)
     user_id = Column(String(50), nullable=False, index=True)
     audio_url = Column(String(500))
+    job_description = Column(Text)
+    callback_url = Column(String(500))
+    questions = Column(JSON, nullable=True)
     transcript = Column(Text)
     technical_score = Column(Float)
     communication_score = Column(Float)

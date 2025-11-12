@@ -2,7 +2,13 @@ import time
 from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
 from app.database.error_logger import error_logger
 from app.database.audit_logger import audit_logger
+from app.database.models import AnalysisResultDB
 from app.models.analysis.request import AsyncProcessQueuedJobs
+from app.models.job.status import (
+    JobStatusResponse,
+    JobsStatusResponse,
+    RequestJobsStatus,
+)
 from app.services.GeminiAnalysis import gemini_service
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
 from app.services import whisper_service
@@ -16,6 +22,8 @@ from app.api.dependencies import (
     require_premium,
     require_admin,
 )
+from app.models.job.status import RequestJobsStatus, JobsStatusResponse
+from app.database.repository import analysis_repository, audit_repository
 from app.core.logging import log
 
 # Create router instance
@@ -227,4 +235,98 @@ async def process_endpoint(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process queued jobs",
+        )
+
+
+@router.get(
+    "/job/status/{job_id}",
+    response_model=JobStatusResponse,
+    summary="Get job status",
+    description="Get status of a specific job.",
+    tags=["Job Status"],
+)
+async def get_job_status(
+    job_id: str,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get status of a specific job"""
+    try:
+        return await analysis_repository.get_job_status_by_id(job_id)
+    except Exception as e:
+        log.error(f"Failed to get job status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get job status",
+        )
+
+
+@router.post(
+    "/jobs/status",
+    response_model=JobsStatusResponse,
+    summary="Get status of multiple jobs",
+    description="Retrieve the status of multiple analysis jobs based on filters.",
+    tags=["Job Status"],
+)
+async def get_jobs_status(
+    job_request: RequestJobsStatus,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get status of multiple jobs"""
+    log.info(
+        f"Fetching jobs status for request: {job_request}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
+    try:
+        return await analysis_repository.get_job_status(job_request)
+    except Exception as e:
+        log.error(f"Failed to get jobs status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get jobs status",
+        )
+
+
+@router.post(
+    "jobs/result",
+    response_model=AnalysisResultDB,
+    tags=["Job Result"],
+    description="Get analysis result for a completed job.",
+)
+async def get_job_result_post(
+    job_request: RequestJobsStatus,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get analysis result for a completed job"""
+    pass  # Placeholder for POST method if needed
+
+
+@router.get(
+    "jobs/result/{job_id}",
+    response_model=AnalysisResultDB,
+    tags=["Job Result"],
+    description="Get analysis result for a completed job.",
+)
+async def get_job_result(
+    job_id: str,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get analysis result for a completed job"""
+    log.info(
+        f"Fetching job result for job_id: {job_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
+    try:
+        job_result_db = await analysis_repository.get_job_result(job_id)
+        if job_result_db is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job result not found or not completed",
+            )
+        return job_result_db
+    except HTTPException:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="error when fetching job result",
         )

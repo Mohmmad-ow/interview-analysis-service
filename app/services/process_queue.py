@@ -9,6 +9,7 @@ from app.models.analysis.request import AsyncProcessQueuedJobs, QueuedJobType
 from app.services.whisper_service import whisper_service
 from app.services.GeminiAnalysis import gemini_service
 from app.models.analysis.response import AnalysisResult
+import json
 
 
 class AsyncJobProcessor:
@@ -113,7 +114,10 @@ class AsyncJobProcessor:
                 user_id=str(job.user_id),
                 audio_url=str(job.audio_url),
                 analysis_result=analysis_result,
+                job_description=request_data["job_description"],
                 status="completed",
+                callback_url=str(job.callback_url),
+                questions=request_data.get("questions", []),
             )
 
             log_info(f"Successfully completed job {job.job_id}")
@@ -142,11 +146,32 @@ class AsyncJobProcessor:
         """
         # TODO: You need to store the original request (job_description, questions, etc.)
         # in your database when creating queued jobs
+        raw_questions = job.questions
+        questions: List[str] = []
+
+        if raw_questions is None:
+            questions = []
+        elif isinstance(raw_questions, str):
+            # Try JSON parse first (e.g. '["q1","q2"]')
+            try:
+                parsed = json.loads(raw_questions)
+                if isinstance(parsed, (list, tuple)):
+                    questions = [str(q) for q in parsed]
+                else:
+                    questions = [str(parsed)]
+            except json.JSONDecodeError:
+                # Fallback: comma-separated string "q1, q2"
+                questions = [q.strip() for q in raw_questions.split(",") if q.strip()]
+        elif isinstance(raw_questions, (list, tuple)):
+            questions = [str(q) for q in raw_questions]
+        else:
+            # Any other type -> coerce to single-string list
+            questions = [str(raw_questions)]
+
         return {
             "audio_url": job.audio_url,
-            "job_description": "Placeholder - need to store this",  # Store this!
-            "questions": [],  # Store this!
-            "language": job.language or "en",
+            "job_description": job.job_description,
+            "questions": questions,
         }
 
     async def _perform_complete_analysis(
