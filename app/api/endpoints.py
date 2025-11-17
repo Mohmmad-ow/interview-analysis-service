@@ -6,6 +6,7 @@ from app.database.models import AnalysisResultDB
 from app.models.analysis.request import AsyncProcessQueuedJobs
 from app.models.job.status import (
     JobStatusResponse,
+    JobsResultRequest,
     JobsStatusResponse,
     RequestJobsStatus,
 )
@@ -288,22 +289,32 @@ async def get_jobs_status(
 
 
 @router.post(
-    "jobs/result",
-    response_model=AnalysisResultDB,
+    "/jobs/result",
     tags=["Job Result"],
     description="Get analysis result for a completed job.",
 )
 async def get_job_result_post(
-    job_request: RequestJobsStatus,
+    job_request: JobsResultRequest,
     current_user: UserContext = Depends(get_current_user),
 ):
     """Get analysis result for a completed job"""
-    pass  # Placeholder for POST method if needed
+    log.info(
+        f"Fetching jobs result for request: {job_request}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
+    try:
+        res = await analysis_repository.get_jobs_result(job_request)
+        return res
+    except Exception as e:
+        log.error("Failed to fetch jobs result: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Failed to get Jobs"
+        )
 
 
 @router.get(
-    "jobs/result/{job_id}",
-    response_model=AnalysisResultDB,
+    "/jobs/result/{job_id}",
     tags=["Job Result"],
     description="Get analysis result for a completed job.",
 )

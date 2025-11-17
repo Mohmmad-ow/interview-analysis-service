@@ -1,4 +1,3 @@
-from os import times
 from sqlite3.dbapi2 import Timestamp
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
