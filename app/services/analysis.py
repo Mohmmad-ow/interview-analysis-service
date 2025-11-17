@@ -115,7 +115,7 @@ class AnalysisService:
                 user_id=user.user_id,
                 audio_url=request.audio_url,
                 analysis_result=result,
-                status="completed",  # ✅ Important: mark as queued
+                status="completed",  # ✅ Important: mark as Completed
                 callback_url=request.callback_url,
                 job_description=request.job_description,
                 questions=request.questions,
