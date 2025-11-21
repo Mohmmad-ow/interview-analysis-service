@@ -49,7 +49,7 @@ class QueuedJobType(str, Enum):
 class AsyncProcessQueuedJobs(BaseModel):
     job_type: QueuedJobType
     user_id: str
-    job_ids: Optional[List[int]] = None
+    job_ids: Optional[List[str]] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     callback_url: Optional[HttpUrl] = None

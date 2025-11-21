@@ -26,6 +26,7 @@ from app.api.dependencies import (
 from app.models.job.status import RequestJobsStatus, JobsStatusResponse
 from app.database.repository import analysis_repository, audit_repository
 from app.core.logging import log
+from app.services.process_queue import job_processor
 
 # Create router instance
 router = APIRouter()
@@ -341,3 +342,47 @@ async def get_job_result(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="error when fetching job result",
         )
+
+
+@router.post(
+    "/process/queued-jobs",
+    summary="Process queued analysis jobs",
+    description="Start background processing of queued interview analysis jobs",
+)
+async def process_queued_jobs(
+    request: AsyncProcessQueuedJobs,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Trigger processing of queued analysis jobs"""
+
+    # Only allow admin users to trigger processing
+    # if current_user.tier != "admin":
+    #     raise HTTPException(
+    #         status_code=403, detail="Only admin users can trigger job processing"
+    #     )
+
+    try:
+        # Start job processing
+        result = await job_processor.process_queued_jobs(request)
+
+        return {
+            "message": "Job processing started",
+            "batch_id": result["batch_id"],
+            "jobs_found": result["processed"],
+            "estimated_time": f"{(result['processed'] / 2):.1f} minutes",  # Rough estimate
+        }
+
+    except Exception as e:
+        if "already running" in str(e):
+            raise HTTPException(
+                status_code=409, detail="Job processor is already running"
+            )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to start job processing: {str(e)}"
+        )
+
+
+@router.get("/process/status")
+async def get_processor_status():
+    """Get current job processor status"""
+    return job_processor.get_processing_status()

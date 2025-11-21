@@ -93,6 +93,9 @@ class AnalysisRepository:
             )
         return None
 
+    async def change_analysis_status(self, job_id: str):
+        pass
+
     async def get_job_status(
         self, job_request: RequestJobsStatus
     ) -> JobsStatusResponse:
@@ -214,18 +217,30 @@ class AnalysisRepository:
             return result
         return None
 
-    async def update_analysis_status(self, job_id: str, status: str) -> bool:
+    async def update_analysis_status(
+        self, job_id: str, status: str, analysis_result: AnalysisResult
+    ) -> bool:
         """Update analysis job status"""
         result = (
             self.session.query(AnalysisResultDB)
             .filter(AnalysisResultDB.job_id == job_id)
-            .update({"status": status})
+            .update(
+                {
+                    "status": status,
+                    "transcript": analysis_result.transcript,
+                    "technical_score": analysis_result.technical_score,
+                    "communication_score": analysis_result.communication_score,
+                    "key_insights": analysis_result.key_insights,
+                    "confidence_data": analysis_result.confidence_indicators,
+                    "processing_time": analysis_result.processing_time,
+                }
+            )
         )
 
         self.session.commit()
         return result > 0
 
-    async def get_analysis_by_ids(self, job_ids: List[int]) -> List[AnalysisResultDB]:
+    async def get_analysis_by_ids(self, job_ids: List[str]) -> List[AnalysisResultDB]:
         """Get multiple analysis results by job IDs"""
         return (
             self.session.query(AnalysisResultDB)
