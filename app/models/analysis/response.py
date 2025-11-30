@@ -1,70 +1,184 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
-class AsyncAnalysisResponse(BaseModel):
-    job_id: str = Field(..., description="Unique identifier for the analysis job")
-    status: str = Field(
-        ...,
-        pattern="^(queued|processing|completed|failed)$",
-        description="Current status of the analysis job",
-    )
-    estimated_wait: Optional[int] = Field(
-        default=None, description="Estimated wait time in seconds"
-    )
-    status_url: str = Field(..., description="URL to check job status")
+class StructuredResumeData(BaseModel):
+    """Structured data extracted from resume"""
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "job_id": "job_123456",
-                    "status": "queued",
-                    "estimated_wait": 45,
-                    "status_url": "/v1/analysis/job_123456/status",
-                }
-            ]
+    name: Optional[str] = Field(None, description="Candidate name")
+    email: Optional[str] = Field(None, description="Email address")
+    phone: Optional[str] = Field(None, description="Phone number")
+    education: List[Dict[str, Any]] = Field(default=[], description="Education history")
+    work_experience: List[Dict[str, Any]] = Field(
+        default=[], description="Work experience"
+    )
+    skills: List[str] = Field(default=[], description="List of skills")
+    certifications: List[str] = Field(default=[], description="Certifications")
+    languages: List[str] = Field(default=[], description="Languages spoken")
+    summary: Optional[str] = Field(None, description="Professional summary")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "email": "john.doe@email.com",
+                "phone": "+1234567890",
+                "education": [
+                    {
+                        "institution": "University of Example",
+                        "degree": "Bachelor of Science in Computer Science",
+                        "years": "2018-2022",
+                        "gpa": "3.8",
+                    }
+                ],
+                "work_experience": [
+                    {
+                        "company": "Tech Corp",
+                        "title": "Software Engineer",
+                        "years": "2022-Present",
+                        "description": "Developed web applications using Python and FastAPI",
+                    }
+                ],
+                "skills": ["Python", "FastAPI", "SQL", "Docker"],
+                "certifications": ["AWS Certified Developer"],
+                "languages": ["English", "Arabic"],
+                "summary": "Experienced software engineer with 3+ years in web development",
+            }
         }
-    }
 
 
-class AnalysisResult(BaseModel):
-    transcript: str = Field(..., description="Full interview transcription")
-    technical_score: float = Field(
-        ..., ge=0, le=10, description="Technical skills score (0-10)"
+class ScoreBreakdown(BaseModel):
+    """Detailed scoring breakdown"""
+
+    skills_score: float = Field(..., ge=0, le=100, description="Skills matching score")
+    experience_score: float = Field(
+        ..., ge=0, le=100, description="Experience relevance score"
     )
-    communication_score: float = Field(
-        ..., ge=0, le=10, description="Communication skills score (0-10)"
+    education_score: float = Field(
+        ..., ge=0, le=100, description="Education matching score"
     )
-    confidence_indicators: Dict[str, float] = Field(
-        ..., description="Confidence metrics for different aspects"
-    )
-    key_insights: List[str] = Field(
-        ..., description="Key observations and recommendations"
-    )
-    processing_time: float = Field(..., description="Total processing time in seconds")
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "transcript": "the transcript of the interview",
-                    "technical_score": 7.5,
-                    "communication_score": 6.4,
-                    "confidence_indicators": {"straight speech": 9.4},
-                    "key_insights": ["Great Technical Knowledge"],
-                    "processing_time": 65,
-                }
-            ]
+    overall_fit: float = Field(..., ge=0, le=100, description="Overall fit score")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "skills_score": 85.5,
+                "experience_score": 72.0,
+                "education_score": 90.0,
+                "overall_fit": 82.5,
+            }
         }
-    }
 
 
-class QuestionAnalysis(BaseModel):
-    question_text: str = Field(..., description="The question that was asked")
-    answer_transcript: str = Field(..., description="Transcription of the answer")
-    technical_score: float = Field(..., ge=0, le=10)
-    communication_score: float = Field(..., ge=0, le=10)
-    confidence_level: str = Field(
-        ..., pattern="^(high|medium|low)$", description="Overall confidence assessment"
+class SkillsMatch(BaseModel):
+    """Detailed skills matching information"""
+
+    required_skills_matched: List[str] = Field(
+        default=[], description="Matched required skills"
     )
+    preferred_skills_matched: List[str] = Field(
+        default=[], description="Matched preferred skills"
+    )
+    missing_required_skills: List[str] = Field(
+        default=[], description="Missing required skills"
+    )
+    missing_preferred_skills: List[str] = Field(
+        default=[], description="Missing preferred skills"
+    )
+    skill_match_percentage: float = Field(
+        ..., ge=0, le=100, description="Percentage of skills matched"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "required_skills_matched": ["Python", "FastAPI"],
+                "preferred_skills_matched": ["Docker"],
+                "missing_required_skills": ["AWS"],
+                "missing_preferred_skills": ["React", "Kubernetes"],
+                "skill_match_percentage": 66.7,
+            }
+        }
+
+
+class DocumentAnalysisResult(BaseModel):
+    """Main response model for document analysis"""
+
+    extracted_text: str = Field(..., description="Raw extracted text from document")
+    structured_data: StructuredResumeData = Field(
+        ..., description="Structured resume data"
+    )
+    overall_score: float = Field(
+        ..., ge=0, le=100, description="Overall match score (0-100)"
+    )
+    score_breakdown: ScoreBreakdown = Field(
+        ..., description="Detailed scoring breakdown"
+    )
+    skills_match: SkillsMatch = Field(..., description="Skills matching details")
+    key_insights: List[str] = Field(..., description="Key insights and recommendations")
+    processing_time: float = Field(..., ge=0, description="Processing time in seconds")
+    confidence_scores: Dict[str, float] = Field(
+        default={}, description="Confidence scores for extracted data"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "extracted_text": "John Doe\nSoftware Engineer...",
+                "structured_data": {
+                    "name": "John Doe",
+                    "email": "john.doe@email.com",
+                    "skills": ["Python", "FastAPI", "SQL"],
+                },
+                "overall_score": 82.5,
+                "score_breakdown": {
+                    "skills_score": 85.5,
+                    "experience_score": 72.0,
+                    "education_score": 90.0,
+                    "overall_fit": 82.5,
+                },
+                "skills_match": {
+                    "required_skills_matched": ["Python", "FastAPI"],
+                    "missing_required_skills": ["AWS"],
+                    "skill_match_percentage": 66.7,
+                },
+                "key_insights": [
+                    "Strong Python and FastAPI experience",
+                    "Missing AWS experience which is required",
+                    "Excellent educational background",
+                ],
+                "processing_time": 15.2,
+                "confidence_scores": {
+                    "name_extraction": 0.95,
+                    "skills_extraction": 0.88,
+                },
+            }
+        }
+
+
+class DocumentBatchAnalysisResult(BaseModel):
+    """Response model for batch document analysis"""
+
+    job_posting_id: Optional[str] = Field(None, description="Job posting ID")
+    analyses: List[DocumentAnalysisResult] = Field(
+        ..., description="List of analysis results"
+    )
+    total_processed: int = Field(..., description="Total documents processed")
+    processing_summary: Dict[str, Any] = Field(
+        ..., description="Processing summary statistics"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "job_posting_id": "job_123",
+                "analyses": [],
+                "total_processed": 5,
+                "processing_summary": {
+                    "average_score": 75.2,
+                    "top_candidate_score": 92.5,
+                    "skills_gap_analysis": {"Python": 80, "AWS": 40},
+                },
+            }
+        }

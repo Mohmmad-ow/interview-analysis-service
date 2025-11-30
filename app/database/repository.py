@@ -1,9 +1,25 @@
+from datetime import timezone, datetime, timedelta
+from httpcore import stream
 from sqlalchemy.orm import Session
-from app.database.models import AnalysisResultDB, AuditLog, ErrorLog
+from app.core.logging import log_error
+from app.database.models import (
+    AuditLog,
+    DocumentEducationDB,
+    DocumentKeyInsightsDB,
+    DocumentSkillsDB,
+    DocumentSkillsMatchDB,
+    DocumentWorkExperienceDB,
+    ErrorLog,
+    DocumentAnalysisDB,
+)  # ADD DocumentAnalysisDB
 from app.models import analysis
-from app.models.analysis.response import AnalysisResult
+from app.models.analysis.response import (
+    DocumentAnalysisResult,
+    ScoreBreakdown,
+    SkillsMatch,
+    StructuredResumeData,
+)  # ADD DocumentAnalysisResult
 from typing import Optional, List, Dict
-from datetime import datetime, timedelta
 from app.database.connection import db_manager
 from app.models.audit.request import AuditLog as AuditLogModel
 from app.models.job.status import (
@@ -15,281 +31,356 @@ from app.models.job.status import (
     RequestJobsStatus,
 )
 
+# app/database/repository.py - Improved document methods
+
 
 class AnalysisRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    async def save_analysis_result(
+    # ==================== DOCUMENT ANALYSIS METHODS ====================
+
+    async def save_document_analysis_result(
         self,
         job_id: str,
         user_id: str,
-        audio_url: str,
+        file_url: str,
+        file_type: str,
         job_description: str,
         callback_url: Optional[str],
-        questions: Optional[List[str]],
-        analysis_result: AnalysisResult,
+        required_skills: Optional[List[str]],
+        preferred_skills: Optional[List[str]],
+        analysis_result: DocumentAnalysisResult,
         status: str = "completed",
-    ) -> AnalysisResultDB:
-        """Save analysis result to database"""
-        db_result = AnalysisResultDB(
-            job_id=job_id,
-            user_id=user_id,
-            audio_url=audio_url,
-            transcript=analysis_result.transcript,
-            technical_score=analysis_result.technical_score,
-            communication_score=analysis_result.communication_score,
-            confidence_data=analysis_result.confidence_indicators,
-            key_insights=analysis_result.key_insights,
-            processing_time=analysis_result.processing_time,
-            status=status,
-            job_description=job_description,
-            callback_url=callback_url,
-            questions=questions if questions is not None else [],
-        )
-
-        self.session.add(db_result)
-        self.session.commit()
-        self.session.refresh(db_result)
-        return db_result
-
-    async def get_analysis_result(self, job_id: str) -> Optional[AnalysisResultDB]:
-        """Get analysis result by job ID"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.job_id == job_id)
-            .first()
-        )
-
-    async def get_user_analyses(
-        self, user_id: str, limit: int = 50, offset: int = 0
-    ) -> List[AnalysisResultDB]:
-        """Get analysis history for a user"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.user_id == user_id)
-            .order_by(AnalysisResultDB.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-
-    async def get_job_status_by_id(self, job_id: str) -> Optional[JobStatusResponse]:
-        """Get job status by job ID"""
-        result = (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.job_id == job_id)
-            .first()
-        )
-        if result:
-            return JobStatusResponse(
-                job_id=str(result.job_id),
-                status=str(result.status),
-                result_url=(
-                    None
-                    if str(result.status) != "completed"
-                    else f"/v1/analysis/{result.job_id}/result"
+    ) -> DocumentAnalysisDB:
+        """Save document analysis result with normalized data"""
+        try:
+            # Create main document analysis record
+            db_document = DocumentAnalysisDB(
+                job_id=job_id,
+                user_id=user_id,
+                file_url=file_url,
+                file_type=file_type,
+                extracted_text=analysis_result.extracted_text,
+                candidate_name=(
+                    analysis_result.structured_data.name
+                    if analysis_result.structured_data
+                    else None
+                ),
+                candidate_email=(
+                    analysis_result.structured_data.email
+                    if analysis_result.structured_data
+                    else None
+                ),
+                candidate_phone=(
+                    analysis_result.structured_data.phone
+                    if analysis_result.structured_data
+                    else None
+                ),
+                overall_score=analysis_result.overall_score,
+                skills_score=(
+                    analysis_result.score_breakdown.skills_score
+                    if analysis_result.score_breakdown
+                    else 0.0
+                ),
+                experience_score=(
+                    analysis_result.score_breakdown.experience_score
+                    if analysis_result.score_breakdown
+                    else 0.0
+                ),
+                education_score=(
+                    analysis_result.score_breakdown.education_score
+                    if analysis_result.score_breakdown
+                    else 0.0
+                ),
+                status=status,
+                callback_url=callback_url,
+                processing_time=analysis_result.processing_time,
+                completed_at=(
+                    datetime.now(timezone.utc) if status == "completed" else None
                 ),
             )
-        return None
 
-    async def change_analysis_status(self, job_id: str):
-        pass
+            self.session.add(db_document)
+            self.session.flush()  # Get the ID for foreign keys
 
-    async def get_job_status(
-        self, job_request: RequestJobsStatus
-    ) -> JobsStatusResponse:
-        """Get job status based on filters"""
-        query = self.session.query(AnalysisResultDB)
+            # Save education history
+            if (
+                analysis_result.structured_data
+                and analysis_result.structured_data.education
+            ):
+                for edu in analysis_result.structured_data.education:
+                    db_edu = DocumentEducationDB(
+                        document_id=db_document.id,
+                        institution=edu.get("institution"),
+                        degree=edu.get("degree"),
+                        field_of_study=edu.get("field_of_study"),
+                        start_year=edu.get("start_year"),
+                        end_year=edu.get("end_year"),
+                        gpa=edu.get("gpa"),
+                    )
+                    self.session.add(db_edu)
 
-        if job_request.job_ids:
-            query = query.filter(AnalysisResultDB.job_id.in_(job_request.job_ids))
-        if job_request.status:
-            query = query.filter(AnalysisResultDB.status == job_request.status.value)
-        if job_request.start_date and job_request.end_date:
-            query = query.filter(
-                AnalysisResultDB.created_at >= job_request.start_date,
-                AnalysisResultDB.created_at <= job_request.end_date,
+            # Save work experience
+            if (
+                analysis_result.structured_data
+                and analysis_result.structured_data.work_experience
+            ):
+                for work in analysis_result.structured_data.work_experience:
+                    db_work = DocumentWorkExperienceDB(
+                        document_id=db_document.id,
+                        company=work.get("company"),
+                        title=work.get("title"),
+                        start_date=work.get("start_date"),
+                        end_date=work.get("end_date"),
+                        description=work.get("description"),
+                        duration_months=work.get("duration_months"),
+                    )
+                    self.session.add(db_work)
+
+            # Save skills
+            if (
+                analysis_result.structured_data
+                and analysis_result.structured_data.skills
+            ):
+                for skill in analysis_result.structured_data.skills:
+                    db_skill = DocumentSkillsDB(
+                        document_id=db_document.id,
+                        skill_name=skill,
+                        skill_category=self._categorize_skill(skill),
+                        confidence=0.9,  # Default confidence
+                    )
+                    self.session.add(db_skill)
+
+            # Save skills matching results
+            if analysis_result.skills_match:
+                # Save required skills matches
+                for skill in required_skills or []:
+                    is_matched = skill in (
+                        analysis_result.skills_match.required_skills_matched or []
+                    )
+                    db_match = DocumentSkillsMatchDB(
+                        document_id=db_document.id,
+                        required_skill=skill,
+                        is_matched=is_matched,
+                        match_type="exact" if is_matched else "missing",
+                        confidence=1.0 if is_matched else 0.0,
+                    )
+                    self.session.add(db_match)
+
+            # Save key insights
+            if analysis_result.key_insights:
+                for insight in analysis_result.key_insights:
+                    db_insight = DocumentKeyInsightsDB(
+                        document_id=db_document.id,
+                        insight_text=insight,
+                        insight_type=self._classify_insight(insight),
+                        relevance_score=0.8,  # Default relevance
+                    )
+                    self.session.add(db_insight)
+
+            self.session.commit()
+            return db_document
+
+        except Exception as e:
+            self.session.rollback()
+            raise e
+
+    async def parse_document_analysis_result(
+        self, result: DocumentAnalysisDB
+    ) -> DocumentAnalysisResult:
+        """Robust parsing with proper error handling and eager loading"""
+        try:
+            # Eager load all related data
+            education_records = await self._get_education_for_document(str(result.id))
+            work_records = await self._get_work_experience_for_document(str(result.id))
+            skill_records = await self._get_skills_for_document(str(result.id))
+            skills_match_records = await self._get_skills_match_for_document(
+                str(result.id)
             )
-        if job_request.user_id:
-            query = query.filter(AnalysisResultDB.user_id == job_request.user_id)
-        total_count = query.count()
-        results = query.offset(job_request.offset).limit(job_request.limit).all()
-        pages = (total_count + job_request.limit - 1) // job_request.limit
-        current_page = (job_request.offset // job_request.limit) + 1
-        result = JobsStatusResponse(
-            jobs=[
-                JobStatusResponse(
-                    job_id=str(result.job_id),
-                    status=str(result.status),
-                    result_url=(
-                        None
-                        if str(result.status) != "completed"
-                        else f"/v1/analysis/{result.job_id}/result"
-                    ),
-                )
-                for result in results
-            ],
-            total_count=total_count,
-            offset=job_request.offset,
-            limit=job_request.limit,
-            pages=pages,
-            current_page=current_page,
+            insights_records = await self._get_insights_for_document(str(result.id))
+
+            # Build structured data
+            structured_data = StructuredResumeData(
+                name=str(result.candidate_name),
+                email=str(result.candidate_email),
+                phone=str(result.candidate_phone),
+                education=education_records,
+                work_experience=work_records,
+                skills=[str(skill.skill_name) for skill in skill_records],
+                certifications=[],  # You can add certifications table if needed
+                languages=[],  # You can add languages table if needed
+                summary=None,  # You can add summary field if needed
+            )
+
+            # Build score breakdown
+            score_breakdown = ScoreBreakdown(
+                skills_score=float(result.skills_score) or 0.0,  # type: ignore
+                experience_score=float(result.experience_score) or 0.0,  # type: ignore
+                education_score=float(result.education_score) or 0.0,  # type: ignore
+                overall_fit=float(result.overall_score) or 0.0,  # type: ignore
+            )
+
+            # Build skills match
+            required_matched = [
+                str(sm.required_skill)
+                for sm in skills_match_records
+                if bool(sm.is_matched)
+            ]
+            missing_required = [
+                str(sm.required_skill)
+                for sm in skills_match_records
+                if not bool(sm.is_matched)
+            ]
+
+            skills_match = SkillsMatch(
+                required_skills_matched=required_matched,
+                preferred_skills_matched=[],  # You can add preferred skills logic
+                missing_required_skills=missing_required,
+                missing_preferred_skills=[],
+                skill_match_percentage=(
+                    len(required_matched) / len(skills_match_records) * 100
+                    if skills_match_records
+                    else 0.0
+                ),
+            )
+
+            # Build key insights
+            key_insights = [str(insight.insight_text) for insight in insights_records]
+
+            return DocumentAnalysisResult(
+                extracted_text=str(result.extracted_text) or "",
+                structured_data=structured_data,
+                overall_score=float(result.overall_score) or 0.0,  # type: ignore
+                score_breakdown=score_breakdown,
+                skills_match=skills_match,
+                key_insights=key_insights,
+                processing_time=float(result.processing_time) or 0.0,  # type: ignore
+                confidence_scores={},  # You can add confidence tracking if needed
+            )
+
+        except Exception as e:
+            log_error(f"Failed to parse document analysis result {result.id}: {str(e)}")
+            # Return a safe default instead of crashing
+            return self._create_safe_default_result(result)
+
+    # Helper methods for related data
+    async def _get_education_for_document(self, document_id: str) -> List[Dict]:
+        records = (
+            self.session.query(DocumentEducationDB)
+            .filter(DocumentEducationDB.document_id == document_id)
+            .all()
         )
-        return result
+        return [
+            {
+                "institution": record.institution,
+                "degree": record.degree,
+                "field_of_study": record.field_of_study,
+                "start_year": record.start_year,
+                "end_year": record.end_year,
+                "gpa": record.gpa,
+            }
+            for record in records
+        ]
 
-    async def get_jobs_result(
-        self, job_request: JobsResultRequest
-    ) -> JobsResultResponse:
-        """Get job results based on filters"""
-        query = self.session.query(AnalysisResultDB)
-        query = query.filter(AnalysisResultDB.status == "completed")
-        if job_request.job_ids:
-            query = query.filter(AnalysisResultDB.job_id.in_(job_request.job_ids))
-        if job_request.start_date and job_request.end_date:
-            query = query.filter(
-                AnalysisResultDB.created_at >= job_request.start_date,
-                AnalysisResultDB.created_at <= job_request.end_date,
-            )
-        if job_request.user_id:
-            query = query.filter(AnalysisResultDB.user_id == job_request.user_id)
-        total_count = query.count()
-        pages = (total_count + job_request.limit - 1) // job_request.limit
-        current_page = (job_request.offset // job_request.limit) + 1
-        results = query.offset(job_request.offset).limit(job_request.limit).all()
-        parsed_results: list[JobResultResponse] = []
-        for result in results:
-            parsed_results.append(
-                JobResultResponse(
-                    job_id=str(result.job_id),
-                    analysis_result=self.parse_analysis_result(result),
-                )
-            )
-        return JobsResultResponse(
-            jobs=parsed_results,
-            total_count=total_count,
-            offset=job_request.offset,
-            limit=job_request.limit,
-            pages=pages,
-            current_page=current_page,
+    async def _get_work_experience_for_document(self, document_id: str) -> List[Dict]:
+        records = (
+            self.session.query(DocumentWorkExperienceDB)
+            .filter(DocumentWorkExperienceDB.document_id == document_id)
+            .all()
+        )
+        return [
+            {
+                "company": record.company,
+                "title": record.title,
+                "start_date": record.start_date,
+                "end_date": record.end_date,
+                "description": record.description,
+                "duration_months": record.duration_months,
+            }
+            for record in records
+        ]
+
+    async def _get_skills_for_document(
+        self, document_id: str
+    ) -> List[DocumentSkillsDB]:
+        return (
+            self.session.query(DocumentSkillsDB)
+            .filter(DocumentSkillsDB.document_id == document_id)
+            .all()
         )
 
-    def parse_analysis_result(self, result: AnalysisResultDB) -> AnalysisResult:
-        """Parse AnalysisResultDB to AnalysisResult"""
-        confidence_indicators = {}
-        if result.confidence_data:  # type: ignore
-            if isinstance(result.confidence_data, dict):
-                confidence_indicators = result.confidence_data
-            elif isinstance(result.confidence_data, str):
-                import json
+    async def _get_skills_match_for_document(
+        self, document_id: str
+    ) -> List[DocumentSkillsMatchDB]:
+        return (
+            self.session.query(DocumentSkillsMatchDB)
+            .filter(DocumentSkillsMatchDB.document_id == document_id)
+            .all()
+        )
 
-                confidence_indicators = json.loads(result.confidence_data)
+    async def _get_insights_for_document(
+        self, document_id: str
+    ) -> List[DocumentKeyInsightsDB]:
+        return (
+            self.session.query(DocumentKeyInsightsDB)
+            .filter(DocumentKeyInsightsDB.document_id == document_id)
+            .all()
+        )
 
-        key_insights = []
-        if result.key_insights:  # type: ignore
-            if isinstance(result.key_insights, list):
-                key_insights = result.key_insights
-            elif isinstance(result.key_insights, str):
-                import json
-
-                key_insights = json.loads(result.key_insights)
-
-        return AnalysisResult(
-            transcript=str(result.transcript) or "",
-            technical_score=result.technical_score or 0.0,  # type: ignore
-            communication_score=result.communication_score or 0.0,  # type: ignore
-            confidence_indicators=confidence_indicators or {},
-            key_insights=key_insights or [],
+    def _create_safe_default_result(
+        self, result: DocumentAnalysisDB
+    ) -> DocumentAnalysisResult:
+        """Create a safe default result when parsing fails"""
+        return DocumentAnalysisResult(
+            extracted_text=str(result.extracted_text) or "",
+            structured_data=StructuredResumeData(
+                name="",
+                email="",
+                phone="",
+                education=[],
+                work_experience=[],
+                skills=[],
+                summary=None,
+            ),
+            overall_score=float(result.overall_score) or 0.0,  # type: ignore
+            score_breakdown=ScoreBreakdown(
+                skills_score=0.0,
+                experience_score=0.0,
+                education_score=0.0,
+                overall_fit=0.0,
+            ),
+            skills_match=SkillsMatch(
+                required_skills_matched=[],
+                preferred_skills_matched=[],
+                missing_required_skills=[],
+                missing_preferred_skills=[],
+                skill_match_percentage=0.0,
+            ),
+            key_insights=[],
             processing_time=result.processing_time or 0.0,  # type: ignore
+            confidence_scores={},
         )
 
-    async def get_job_result(self, job_id: str) -> Optional[AnalysisResultDB]:
-        """Get job result by job ID"""
-        result = (
-            self.session.query(AnalysisResultDB)
-            .filter(
-                AnalysisResultDB.job_id == job_id,
-                AnalysisResultDB.status == "completed",
-            )
-            .first()
-        )
-        if result:
-            return result
-        return None
+    def _categorize_skill(self, skill: str) -> str:
+        """Categorize skills - you can enhance this logic"""
+        technical_keywords = ["python", "java", "sql", "docker", "aws", "fastapi"]
+        if any(keyword in skill.lower() for keyword in technical_keywords):
+            return "technical"
+        return "other"
 
-    async def update_analysis_status(
-        self, job_id: str, status: str, analysis_result: AnalysisResult
-    ) -> bool:
-        """Update analysis job status"""
-        result = (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.job_id == job_id)
-            .update(
-                {
-                    "status": status,
-                    "transcript": analysis_result.transcript,
-                    "technical_score": analysis_result.technical_score,
-                    "communication_score": analysis_result.communication_score,
-                    "key_insights": analysis_result.key_insights,
-                    "confidence_data": analysis_result.confidence_indicators,
-                    "processing_time": analysis_result.processing_time,
-                }
-            )
-        )
-
-        self.session.commit()
-        return result > 0
-
-    async def get_analysis_by_ids(self, job_ids: List[str]) -> List[AnalysisResultDB]:
-        """Get multiple analysis results by job IDs"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.job_id.in_(job_ids))
-            .all()
-        )
-
-    async def get_all_queued_jobs(self) -> List[AnalysisResultDB]:
-        """Get all analysis jobs with status 'queued'"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.status == "queued")
-            .all()
-        )
-
-    async def get_queued_jobs_by_user(self, user_id: str) -> List[AnalysisResultDB]:
-        """Get all queued analysis jobs for a specific user"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(
-                AnalysisResultDB.status == "queued", AnalysisResultDB.user_id == user_id
-            )
-            .all()
-        )
-
-    async def get_queued_jobs_by_date(
-        self, start_date: datetime, end_date: datetime
-    ) -> List[AnalysisResultDB]:
-        """Get all queued analysis jobs within a date range"""
-        return (
-            self.session.query(AnalysisResultDB)
-            .filter(
-                AnalysisResultDB.status == "queued",
-                AnalysisResultDB.created_at >= start_date,
-                AnalysisResultDB.created_at <= end_date,
-            )
-            .all()
-        )
-
-    async def update_job_status(self, job_id: str, status: str) -> bool:
-        """Update job status by job ID"""
-        result = (
-            self.session.query(AnalysisResultDB)
-            .filter(AnalysisResultDB.job_id == job_id)
-            .update({"status": status})
-        )
-
-        self.session.commit()
-        return result > 0
+    def _classify_insight(self, insight: str) -> str:
+        """Classify insights - you can enhance this logic"""
+        if any(
+            word in insight.lower()
+            for word in ["strong", "excellent", "good", "impressive"]
+        ):
+            return "strength"
+        elif any(
+            word in insight.lower() for word in ["missing", "lack", "weak", "improve"]
+        ):
+            return "weakness"
+        return "recommendation"
 
 
 class AuditRepository:

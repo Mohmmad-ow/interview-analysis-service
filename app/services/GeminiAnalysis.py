@@ -5,7 +5,11 @@ from loguru import logger
 from app.config import settings
 from google import genai
 
-from app.models.analysis.response import QuestionAnalysis
+from app.models.analysis.response import (
+    StructuredResumeData,
+    ScoreBreakdown,
+    SkillsMatch,
+)
 
 
 class GeminiAnalysis:
@@ -24,77 +28,208 @@ class GeminiAnalysis:
             logger.error(f"Failed to initialize Gemini client: {e}")
             raise
 
-    async def analyze_interview(
+    # ==================== DOCUMENT ANALYSIS METHODS ====================
+
+    async def analyze_document(
         self,
-        transcript: str,
+        extracted_text: str,
         job_description: str,
-        questions: Optional[List[str]] = None,
+        required_skills: List[str],
+        preferred_skills: Optional[List[str]] = None,
     ) -> Dict:
         """
-        Main analysis method that uses Gemini to evaluate the interview
+        Analyze resume/document text and extract structured information with scoring
         """
         try:
-            prompt = self._build_analysis_prompt(transcript, job_description, questions)
+            prompt = self._build_document_analysis_prompt(
+                extracted_text, job_description, required_skills, preferred_skills or []
+            )
             response = await self._call_gemini_api(prompt)
-            return self._parse_analysis_response(response)
+            return self._parse_document_analysis_response(
+                response, required_skills, preferred_skills or []
+            )
 
         except Exception as e:
-            logger.error(f"Analysis failed: {e}")
+            logger.error(f"Document analysis failed: {e}")
             raise
 
-    def _build_analysis_prompt(
+    def _build_document_analysis_prompt(
         self,
-        transcript: str,
+        extracted_text: str,
         job_description: str,
-        questions: Optional[List[str]] = None,
+        required_skills: List[str],
+        preferred_skills: List[str],
     ) -> str:
         """
-        Build the prompt for Gemini analysis
+        Build the prompt for document/resume analysis
         """
-        # Could customize further based on job role, industry, etc.
-        # {f"SPECIFIC QUESTIONS ASKED: {questions}" if questions else ""}
-        base_prompt = f"""
-        Analyze this job interview transcript and provide a comprehensive evaluation.
+        prompt = f"""
+        Analyze this resume document and extract structured information. Then score the candidate against the job requirements.
 
         JOB DESCRIPTION:
         {job_description}
 
-        INTERVIEW TRANSCRIPT:
-        {transcript}
+        REQUIRED SKILLS: {', '.join(required_skills)}
+        PREFERRED SKILLS: {', '.join(preferred_skills)}
 
-        
+        RESUME TEXT:
+        {extracted_text}
 
-        {f"POINTS OF INTEREST TO FOCUS ON: {', '.join(questions)}" if questions else ""}
-
-        Please provide analysis in the following JSON format:
+        Please provide analysis in the following EXACT JSON format:
         {{
-            "technical_score": 0.0-10.0,
-            "communication_score": 0.0-10.0,
-            "confidence_indicators": {{
-                "clarity": 0.0-1.0,
-                "articulation": 0.0-1.0,
-                "engagement": 0.0-1.0
+            "structured_data": {{
+                "name": "full name or null",
+                "email": "email or null", 
+                "phone": "phone number or null",
+                "education": [
+                    {{
+                        "institution": "institution name",
+                        "degree": "degree obtained", 
+                        "field_of_study": "field of study or null",
+                        "start_year": 2018,
+                        "end_year": 2022,
+                        "gpa": 3.8
+                    }}
+                ],
+                "work_experience": [
+                    {{
+                        "company": "company name",
+                        "title": "job title",
+                        "start_date": "start date",
+                        "end_date": "end date or null",
+                        "description": "role description",
+                        "duration_months": 24
+                    }}
+                ],
+                "skills": ["skill1", "skill2", "skill3"],
+                "certifications": ["cert1", "cert2"],
+                "languages": ["language1", "language2"],
+                "summary": "professional summary or null"
+            }},
+            "overall_score": 0-100,
+            "score_breakdown": {{
+                "skills_score": 0-100,
+                "experience_score": 0-100, 
+                "education_score": 0-100,
+                "overall_fit": 0-100
+            }},
+            "skills_match": {{
+                "required_skills_matched": ["skill1", "skill2"],
+                "preferred_skills_matched": ["skill3"],
+                "missing_required_skills": ["skill4"],
+                "missing_preferred_skills": ["skill5"],
+                "skill_match_percentage": 75.5
             }},
             "key_insights": [
-                "list of key observations",
-                "strengths and weaknesses",
-                "specific recommendations",
-                "add some predictions about candidate fit",
-                "how the candidate compares to typical candidates for this role",
-                "any potential red flags",
-                "areas for improvements",
+                "Key strength 1",
+                "Key strength 2", 
+                "Area for improvement 1",
+                "Recommendation 1"
             ]
         }}
 
         Scoring Guidelines:
-        - Technical Score: Relevance to job requirements, depth of knowledge, problem-solving ability
-        - Communication Score: Clarity, structure, listening skills, articulation
-        - Confidence Indicators: Based on language patterns, hesitation, assertiveness
+        - Overall Score: Overall suitability for the role (0-100)
+        - Skills Score: Match between candidate skills and required skills (0-100)
+        - Experience Score: Relevance and depth of work experience (0-100) 
+        - Education Score: Relevance of education background (0-100)
+        - Overall Fit: Cultural and role fit based on entire profile (0-100)
 
-        Be objective and provide constructive feedback.
+        Be objective and focus on factual information from the resume.
         """
 
-        return base_prompt
+        return prompt
+
+    def _parse_document_analysis_response(
+        self,
+        response_text: str,
+        required_skills: List[str],
+        preferred_skills: List[str],
+    ) -> Dict:
+        """
+        Parse Gemini response for document analysis
+        """
+        try:
+            import re
+
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+
+            if json_match:
+                analysis_data = json.loads(json_match.group())
+            else:
+                analysis_data = json.loads(response_text)
+
+            # Validate required structure
+            required_structure = [
+                "structured_data",
+                "overall_score",
+                "score_breakdown",
+                "skills_match",
+                "key_insights",
+            ]
+            for field in required_structure:
+                if field not in analysis_data:
+                    raise ValueError(
+                        f"Missing required field in document analysis: {field}"
+                    )
+
+            # Validate scores are within range
+            if not (0 <= analysis_data["overall_score"] <= 100):
+                raise ValueError("Overall score must be between 0 and 100")
+
+            # Ensure skills_match has all required fields
+            skills_match = analysis_data["skills_match"]
+            required_skills_fields = [
+                "required_skills_matched",
+                "preferred_skills_matched",
+                "missing_required_skills",
+                "missing_preferred_skills",
+                "skill_match_percentage",
+            ]
+            for field in required_skills_fields:
+                if field not in skills_match:
+                    raise ValueError(f"Missing skills_match field: {field}")
+
+            # Calculate actual skill match percentage for validation
+            actual_percentage = (
+                len(skills_match["required_skills_matched"]) / len(required_skills)
+            ) * 100
+            if abs(actual_percentage - skills_match["skill_match_percentage"]) > 20:
+                logger.warning(
+                    f"Skill match percentage seems off. Calculated: {actual_percentage}, Reported: {skills_match['skill_match_percentage']}"
+                )
+
+            return analysis_data
+
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Failed to parse Gemini document response as JSON: {response_text}"
+            )
+            raise ValueError(
+                "Invalid response format from AI service for document analysis"
+            )
+
+    async def analyze_document_batch(
+        self, documents: List[Dict], job_description: str, required_skills: List[str]
+    ) -> List[Dict]:
+        """
+        Analyze multiple documents in batch (for efficiency)
+        """
+        try:
+            # Process documents sequentially for now
+            # You could optimize this with concurrent processing later
+            results = []
+            for doc in documents:
+                result = await self.analyze_document(
+                    doc["text"], job_description, required_skills
+                )
+                results.append(result)
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Batch document analysis failed: {e}")
+            raise
 
     async def _call_gemini_api(self, prompt: str) -> str:
         """
@@ -114,83 +249,6 @@ class GeminiAnalysis:
         except Exception as e:
             logger.error(f"Gemini API call failed: {e}")
             raise
-
-    def _parse_analysis_response(self, response_text: str) -> Dict:
-        """
-        Parse Gemini response into structured data
-        """
-        try:
-            # Extract JSON from response (Gemini might wrap it in markdown)
-            import re
-
-            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-
-            if json_match:
-                analysis_data = json.loads(json_match.group())
-            else:
-                # Fallback: try to parse the entire response
-                analysis_data = json.loads(response_text)
-
-            # Validate required fields
-            required_fields = [
-                "technical_score",
-                "communication_score",
-                "confidence_indicators",
-                "key_insights",
-            ]
-            for field in required_fields:
-                if field not in analysis_data:
-                    raise ValueError(f"Missing required field in analysis: {field}")
-
-            return analysis_data
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini response as JSON: {response_text}")
-            raise ValueError("Invalid response format from AI service")
-
-    async def analyze_question(
-        self, question: str, answer_transcript: str, job_context: str
-    ) -> QuestionAnalysis:
-        """
-        Analyze individual question-answer pairs
-        """
-        prompt = f"""
-        Analyze this specific interview question and answer:
-
-        QUESTION: {question}
-        ANSWER: {answer_transcript}
-        JOB CONTEXT: {job_context}
-
-        Provide scores and confidence level in JSON:
-        {{
-            "technical_score": 0-10,
-            "communication_score": 0-10,
-            "confidence_level": "high|medium|low"
-        }}
-        """
-
-        try:
-            response = await self._call_gemini_api(prompt)
-            analysis_data = self._parse_analysis_response(response)
-
-            return QuestionAnalysis(
-                question_text=question,
-                answer_transcript=answer_transcript,
-                technical_score=analysis_data["technical_score"],
-                communication_score=analysis_data["communication_score"],
-                confidence_level=analysis_data["confidence_level"],
-            )
-
-        except Exception as e:
-            logger.error(f"Question analysis failed: {e}")
-            # Return default analysis on failure
-            return QuestionAnalysis(
-                question_text=question,
-                answer_transcript=answer_transcript,
-                technical_score=5.0,
-                communication_score=5.0,
-                confidence_level="medium",
-            )
 
 
 # Singleton instance

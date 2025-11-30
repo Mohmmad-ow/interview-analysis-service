@@ -12,7 +12,6 @@ from app.models.job.status import (
 )
 from app.services.GeminiAnalysis import gemini_service
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
-from app.services import whisper_service
 from app.services.auth import auth_service
 from app.services.rate_limiter import rate_limiter, RateLimitExceeded
 from app.services.analysis import AnalysisService, analysis_service

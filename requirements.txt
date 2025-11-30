@@ -1,10 +1,48 @@
+# FastAPI & Web Framework
 fastapi[standard]
 uvicorn[standard]
+python-multipart
+
+# Database
+sqlalchemy
+mysql-connector-python
+alembic
+
+# AI/ML Services
+openai-whisper
+openai
+
+# Data Validation & Serialization
 pydantic
 pydantic-settings
+
+# Authentication & Security
 python-jose[cryptography]
-python-multipart
-loguru
+pyjwt
+passlib[bcrypt]
+bcrypt
+
+# Caching & Rate Limiting
 redis
-mysql-connector-python
+slowapi
+
+# HTTP Clients
+httpx
+aiohttp
+
+# Logging
+loguru
+
+# Environment Management
 python-dotenv
+
+# Utilities
+python-magic  # File type detection
+requests  # HTTP requests (for fallback)
+
+# Development (optional)
+pytest
+pytest-asyncio
+black
+isort
+mypy
