@@ -16,7 +16,6 @@ from app.database.repository import (
     audit_repository,
 )
 from app.models.analysis.request import (
-    AsyncProcessQueuedJobs,
     DocumentAnalysisRequest,
     QueuedJobType,
 )
@@ -30,7 +29,6 @@ from app.models.auth import UserContext
 from app.core.logging import log, log_error, log_info
 from app.services.document_parser import document_parser
 from app.services.GeminiAnalysis import gemini_service
-from app.services.process_queue import job_processor
 
 
 class DocumentAnalysisService:
@@ -138,7 +136,8 @@ class DocumentAnalysisService:
 
             audit_id = auditRes.id
             await self.audit_repo.update_job_status(
-                int(audit_id), AuditAction.ANALYSIS_COMPLETED  # type: ignore
+                int(audit_id),
+                AuditAction.ANALYSIS_COMPLETED,  # type: ignore
             )
 
             log.info(
@@ -301,21 +300,23 @@ class DocumentAnalysisService:
                 try:
                     # Update status to processing
                     await self.analysis_repo.update_document_job_status(
-                        job.job_id, "processing"
+                        str(job.job_id), "processing"
                     )
 
                     # Analyze the document
                     result = await self.analyze_document_file(
-                        file_path=job.file_url,
+                        file_path=str(job.file_url),
                         job_description=job.job_description,
                         required_skills=job.required_skills or [],
                         preferred_skills=job.preferred_skills or [],
-                        file_type=job.file_type,
+                        file_type=str(job.file_type),
                     )
 
                     # Save the result
                     await self.analysis_repo.update_document_analysis_status(
-                        job_id=job.job_id, status="completed", analysis_result=result
+                        job_id=str(job.job_id),
+                        status="completed",
+                        analysis_result=result,
                     )
 
                     processed_count += 1
@@ -332,10 +333,10 @@ class DocumentAnalysisService:
                         f"Failed to process queued document job {job.job_id}: {e}"
                     )
                     await self.analysis_repo.update_document_job_status(
-                        job_id=job.job_id, status="failed", error_message=str(e)
+                        id=str(job.job_id), status="failed"
                     )
                     results.append(
-                        {"job_id": job.job_id, "status": "failed", "error": str(e)}
+                        {"job_id": str(job.job_id), "status": "failed", "error": str(e)}
                     )
 
             return {
@@ -353,14 +354,15 @@ class DocumentAnalysisService:
     ) -> Optional[DocumentAnalysisResult]:
         """Get document analysis result by job ID"""
         try:
-            return await self.analysis_repo.get_document_job_result(job_id)
+            analysis_result = await self.analysis_repo.get_document_job_result(job_id)
+            skills_match = SkillsMatch(**analysis_result["skills_match"])
+            structured_data = StructuredResumeData(**analysis_result["structured_data"])
         except Exception as e:
             log_error(f"Failed to get document analysis result for {job_id}: {e}")
             return None
 
     async def get_document_job_status(self, job_id: str) -> Optional[Dict]:
-        raise NotImplementedError
-
+        """Get document job status by job ID"""
         try:
             return await self.analysis_repo.get_document_job_status(job_id)
         except Exception as e:

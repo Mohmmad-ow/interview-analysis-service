@@ -1,20 +1,28 @@
 import time
-from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
+from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException, Form
+from typing import Optional, List
+import json
+
 from app.database.error_logger import error_logger
 from app.database.audit_logger import audit_logger
-from app.database.models import AnalysisResultDB
-from app.models.analysis.request import AsyncProcessQueuedJobs
+from app.models.analysis.request import (
+    AsyncProcessQueuedJobs,
+    DocumentAnalysisRequest,
+    DocumentBatchAnalysisRequest,
+)
 from app.models.job.status import (
     JobStatusResponse,
     JobsResultRequest,
     JobsStatusResponse,
     RequestJobsStatus,
 )
-from app.services.GeminiAnalysis import gemini_service
-from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
+from app.services.analysis import document_analysis_service
+from app.models.analysis.response import (
+    DocumentAnalysisResult,
+    DocumentBatchAnalysisResult,
+)
 from app.services.auth import auth_service
 from app.services.rate_limiter import rate_limiter, RateLimitExceeded
-from app.services.analysis import AnalysisService, analysis_service
 from app.models.auth import UserContext, UserTier
 from app.api.dependencies import (
     get_analysis_service,
@@ -22,171 +30,64 @@ from app.api.dependencies import (
     require_premium,
     require_admin,
 )
-from app.models.job.status import RequestJobsStatus, JobsStatusResponse
 from app.database.repository import analysis_repository, audit_repository
 from app.core.logging import log
-from app.services.process_queue import job_processor
 
 # Create router instance
-router = APIRouter()
+router = APIRouter(prefix="/documents", tags=["Document Analysis"])
 
 
-@router.post("/create-token")
-async def create_token_endpoint(user_data: UserContext):
-    """Endpoint for creating token"""
-
-    token = auth_service.create_access_token(user_data)
-    return {"token": token}
-
-
-@router.get("/validate-token")
-async def validate_token_endpoint(token: str):
-    """Endpoint for validating token"""
-
-    user_context = auth_service.verify_token(token)
-    return {"user": user_context}
-
-
-@router.post(
-    "/analyze/async",
-    response_model=AsyncAnalysisResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Analyze interview asynchronously",
-    description="Queue interview analysis for background processing.",
-)
-async def analyze_interview_async(
-    request: InterviewAnalysisRequest,
-    current_user: UserContext = Depends(get_current_user),
-    analysis_service: AnalysisService = Depends(get_analysis_service),  # ✅ Add this
-):
-    """
-    Asynchronous interview analysis with rate limiting
-    """
-    log.info(
-        f"Received async analysis request for user: {current_user.user_id}",
-        user_id=current_user.user_id,
-        tier=current_user.tier,
-    )
+@router.post("/create-token", summary="Create document analysis token")
+def create_document_token(current_user: UserContext):
+    """Create a token for document analysis"""
     try:
-        # Check rate limit
-        await rate_limiter.check_rate_limit(
-            user_id=current_user.user_id,
-            user_tier=current_user.tier,
-            endpoint="analyze_async",
-        )
-
-        # Queue the job
-        job_id = await analysis_service.queue_analysis_job(request, current_user)
-
-        log.info(
-            f"Queued async analysis job for user: {current_user.user_id}",
-            user_id=current_user.user_id,
-            tier=current_user.tier,
-            job_id=job_id,
-        )
-
-        return AsyncAnalysisResponse(
-            job_id=job_id, status="queued", status_url=f"/v1/analysis/{job_id}/status"
-        )
-
-    except RateLimitExceeded as e:
-        raise e
+        token = auth_service.create_access_token(current_user)
+        return {"token": token}
     except Exception as e:
-        log.error(f"Failed to queue analysis job: {e}")
+        log.error(f"Failed to create document analysis token: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to queue analysis job",
+            detail="Failed to create document analysis token",
         )
 
 
-@router.get(
-    "/rate-limit",
-    summary="Get current rate limit usage",
-    description="Check your current rate limit usage and remaining requests.",
-)
-async def get_rate_limit_info(
+@router.get("/check-token", summary="Check document analysis token validity")
+async def check_document_token(
     current_user: UserContext = Depends(get_current_user),
-    endpoint: str = "analyze",  # Optional query parameter
 ):
-    """
-    Get current rate limit information for the authenticated user
-    """
-
-    log.info(
-        f"Fetching rate limit info for user: {current_user.user_id}",
-        user_id=current_user.user_id,
-        tier=current_user.tier,
-    )
-    info = await rate_limiter.get_user_limits_info(
-        user_id=current_user.user_id, user_tier=current_user.tier, endpoint=endpoint
-    )
-
-    return info
-
-
-@router.get(
-    "/admin/rate-limit/{user_id}",
-    summary="Admin: Get user rate limit info",
-    description="Admin endpoint to check any user's rate limit usage.",
-)
-async def admin_get_rate_limit_info(
-    user_id: str,
-    endpoint: str = "analyze",
-    current_user: UserContext = Depends(require_admin),  # Admin only
-):
-    """
-    Admin endpoint to check rate limits for any user
-    """
-    # For admin view, you might want to use a standard tier
-    # or look up the user's actual tier from your main platform
-    info = await rate_limiter.get_user_limits_info(
-        user_id=user_id,
-        user_tier=UserTier.STANDARD,  # Or look up real tier
-        endpoint=endpoint,
-    )
-
-    return info
-
-
-@router.get("/analyze")
-async def analyze_endpoint(
-    request: InterviewAnalysisRequest,
-    current_user: UserContext = Depends(get_current_user),  # ← INJECTED HERE
-    analysis_service: AnalysisService = Depends(
-        get_analysis_service
-    ),  # ← INJECTED HERE
-):
-    """Endpoint for analysis"""
-    return {"message": "Analysis endpoint"}
+    """Check if the document analysis token is valid"""
+    return {"valid": True, "user_id": current_user.user_id, "tier": current_user.tier}
 
 
 @router.post(
     "/analyze",
-    response_model=AnalysisResult,
+    response_model=DocumentAnalysisResult,
     status_code=status.HTTP_200_OK,
-    summary="Analyze interview synchronously",
+    summary="Analyze document synchronously",
     description="""
-    Process interview audio and return analysis results immediately.
+    Process a resume/document and return analysis results immediately.
+    
+    **Supported Formats:**
+    - PDF files (.pdf)
+    - Word documents (.docx, .doc)
+    - Images (.jpg, .jpeg, .png, .tiff)
     
     **Use Cases:**
-    - Short interviews (under 2 minutes)
-    - Real-time analysis needs
+    - Quick resume screening
+    - Real-time candidate matching
     - When you need immediate results
     
-    **Limitations:**
-    - Longer audio may timeout
-    - No webhook support
+    **Note:** For large files, consider using async endpoint
     """,
-    response_description="Complete analysis results including scores and insights",
+    response_description="Complete document analysis results including extracted data and scores",
 )
-async def analyze_interview(
-    request: InterviewAnalysisRequest,
+async def analyze_document_sync(
+    request: DocumentAnalysisRequest,
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Synchronous interview analysis endpoint"""
-    request.audio_url = request.audio_url.replace("\\\\", "\\")
+    """Synchronous document analysis endpoint"""
     log.info(
-        f"Received async analysis request for user: {current_user.user_id}",
+        f"Received sync document analysis request for user: {current_user.user_id}",
         user_id=current_user.user_id,
         tier=current_user.tier,
     )
@@ -195,193 +96,476 @@ async def analyze_interview(
         await rate_limiter.check_rate_limit(
             user_id=current_user.user_id,
             user_tier=current_user.tier,
-            endpoint="analyze_async",
+            endpoint="analyze_document_sync",
         )
 
-        result = await analysis_service.analyze_interview(request, current_user)
+        result = await document_analysis_service.analyze_document(request, current_user)
         await audit_logger.log_action(
             user_id=current_user.user_id,
-            action="analysis_completed",
-            resource=request.audio_url,
-            metadata={"job_description_length": str(len(request.job_description))},
+            action="document_analysis_completed",
+            resource=request.file_url,
+            metadata={
+                "file_type": request.file_type.value,
+                "job_description_length": len(request.job_description),
+            },
         )
 
         return result
 
+    except RateLimitExceeded as e:
+        raise e
     except Exception as e:
         # Capture error with context
         await error_logger.capture_exception(
             user_id=current_user.user_id,
             request_data=request.model_dump(),
-            custom_message="Interview analysis failed",
+            custom_message="Document analysis failed",
         )
-        raise HTTPException(status_code=500, detail="Analysis failed")
+        raise HTTPException(
+            status_code=500, detail=f"Document analysis failed: {str(e)}"
+        )
 
 
 @router.post(
-    "/process",
+    "/analyze/async",
+    response_model=dict,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Process endpoint",
-    description="Endpoint for processing",
+    summary="Analyze document asynchronously",
+    description="Queue document analysis for background processing.",
 )
-async def process_endpoint(
-    queued_jobs_request: AsyncProcessQueuedJobs,
+async def analyze_document_async(
+    request: DocumentAnalysisRequest,
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Endpoint for processing"""
+    """
+    Asynchronous document analysis with rate limiting
+    """
+    log.info(
+        f"Received async document analysis request for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+    )
     try:
-        result = await analysis_service.process_queued_jobs(queued_jobs_request)
-        return result
+        # Check rate limit
+        await rate_limiter.check_rate_limit(
+            user_id=current_user.user_id,
+            user_tier=current_user.tier,
+            endpoint="analyze_document_async",
+        )
+
+        # Queue the job
+        job_id = await document_analysis_service.queue_analysis_job(
+            request, current_user
+        )
+
+        log.info(
+            f"Queued async document analysis job for user: {current_user.user_id}",
+            user_id=current_user.user_id,
+            tier=current_user.tier,
+            job_id=job_id,
+        )
+
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "status_url": f"/v1/documents/job/status/{job_id}",
+            "result_url": f"/v1/documents/jobs/result/{job_id}",
+        }
+
+    except RateLimitExceeded as e:
+        raise e
     except Exception as e:
+        log.error(f"Failed to queue document analysis job: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process queued jobs",
+            detail="Failed to queue document analysis job",
+        )
+
+
+@router.post(
+    "/analyze/batch",
+    response_model=DocumentBatchAnalysisResult,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Batch analyze multiple documents",
+    description="Analyze multiple documents/resumes in batch.",
+)
+async def analyze_documents_batch(
+    request: DocumentBatchAnalysisRequest,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """
+    Batch document analysis endpoint
+    """
+    log.info(
+        f"Received batch document analysis request for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        tier=current_user.tier,
+        document_count=len(request.documents),
+    )
+    try:
+        # Check rate limit (multiply by document count)
+        for _ in range(len(request.documents)):
+            await rate_limiter.check_rate_limit(
+                user_id=current_user.user_id,
+                user_tier=current_user.tier,
+                endpoint="analyze_document_batch",
+            )
+
+        # Process documents sequentially (can be optimized later)
+        analyses = []
+        for doc_request in request.documents:
+            result = await document_analysis_service.analyze_document(
+                doc_request, current_user
+            )
+            analyses.append(result)
+
+        # Calculate summary statistics
+        avg_score = (
+            sum(a.overall_score for a in analyses) / len(analyses) if analyses else 0
+        )
+        top_score = max(a.overall_score for a in analyses) if analyses else 0
+
+        # Skills gap analysis
+        all_skills_matched = []
+        for analysis in analyses:
+            if analysis.skills_match.required_skills_matched:
+                all_skills_matched.extend(analysis.skills_match.required_skills_matched)
+
+        from collections import Counter
+
+        skill_frequency = Counter(all_skills_matched)
+
+        batch_result = DocumentBatchAnalysisResult(
+            job_posting_id=request.job_posting_id,
+            analyses=analyses,
+            total_processed=len(analyses),
+            processing_summary={
+                "average_score": round(avg_score, 2),
+                "top_candidate_score": top_score,
+                "skills_gap_analysis": dict(skill_frequency),
+                "candidates_above_threshold": sum(
+                    1 for a in analyses if a.overall_score >= 70
+                ),
+            },
+        )
+
+        await audit_logger.log_action(
+            user_id=current_user.user_id,
+            action="batch_document_analysis_completed",
+            resource=f"batch_{len(analyses)}_documents",
+            metadata={
+                "document_count": len(analyses),
+                "average_score": avg_score,
+                "job_posting_id": request.job_posting_id,
+            },
+        )
+
+        return batch_result
+
+    except RateLimitExceeded as e:
+        raise e
+    except Exception as e:
+        await error_logger.capture_exception(
+            user_id=current_user.user_id,
+            request_data=request.model_dump(),
+            custom_message="Batch document analysis failed",
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Batch document analysis failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/upload",
+    summary="Upload and analyze document",
+    description="Upload a document file and analyze it immediately.",
+)
+async def upload_and_analyze_document(
+    file: UploadFile = File(...),
+    job_description: str = Form(...),
+    required_skills: str = Form(default="[]"),
+    preferred_skills: str = Form(default="[]"),
+    language: str = Form(default="en"),
+    callback_url: Optional[str] = Form(None),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """
+    Upload document file and analyze it
+    """
+    try:
+        # Parse skills lists
+        req_skills = json.loads(required_skills)
+        pref_skills = json.loads(preferred_skills)
+
+        # Determine file type from extension
+        file_extension = (
+            file.filename.split(".")[-1].lower() if "." in file.filename else ""  # type: ignore
+        )
+        from app.models.analysis.request import FileType
+
+        if file_extension == "pdf":
+            file_type = FileType.PDF
+        elif file_extension in ["docx", "doc"]:
+            file_type = FileType.DOCX
+        elif file_extension in ["jpg", "jpeg", "png", "tiff"]:
+            file_type = FileType.IMAGE
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_extension}. Supported: pdf, docx, doc, jpg, jpeg, png, tiff",
+            )
+
+        # Save file temporarily
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=f".{file_extension}"
+        ) as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+
+        try:
+            # Create request
+            request = DocumentAnalysisRequest(
+                file_url=temp_path,
+                job_description=job_description,
+                required_skills=req_skills,
+                preferred_skills=pref_skills,
+                file_type=file_type,
+                language=language,
+                callback_url=callback_url,
+            )
+
+            # Analyze the document
+            result = await document_analysis_service.analyze_document(
+                request, current_user
+            )
+
+            return result
+
+        finally:
+            # Clean up temp file
+            os.unlink(temp_path)
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400, detail="Invalid skills format. Use JSON array format."
+        )
+    except Exception as e:
+        await error_logger.capture_exception(
+            user_id=current_user.user_id,
+            request_data={
+                "filename": file.filename,
+                "job_description_length": len(job_description),
+            },
+            custom_message="Document upload and analysis failed",
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Upload and analysis failed: {str(e)}"
         )
 
 
 @router.get(
     "/job/status/{job_id}",
     response_model=JobStatusResponse,
-    summary="Get job status",
-    description="Get status of a specific job.",
-    tags=["Job Status"],
+    summary="Get document job status",
+    description="Get status of a specific document analysis job.",
 )
-async def get_job_status(
+async def get_document_job_status(
     job_id: str,
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Get status of a specific job"""
+    """Get status of a specific document analysis job"""
     try:
-        return await analysis_repository.get_job_status_by_id(job_id)
+        return await analysis_repository.get_document_job_status(job_id)
     except Exception as e:
-        log.error(f"Failed to get job status: {e}")
+        log.error(f"Failed to get document job status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get job status",
-        )
-
-
-@router.post(
-    "/jobs/status",
-    response_model=JobsStatusResponse,
-    summary="Get status of multiple jobs",
-    description="Retrieve the status of multiple analysis jobs based on filters.",
-    tags=["Job Status"],
-)
-async def get_jobs_status(
-    job_request: RequestJobsStatus,
-    current_user: UserContext = Depends(get_current_user),
-):
-    """Get status of multiple jobs"""
-    log.info(
-        f"Fetching jobs status for request: {job_request}",
-        user_id=current_user.user_id,
-        tier=current_user.tier,
-    )
-    try:
-        return await analysis_repository.get_job_status(job_request)
-    except Exception as e:
-        log.error(f"Failed to get jobs status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get jobs status",
-        )
-
-
-@router.post(
-    "/jobs/result",
-    tags=["Job Result"],
-    description="Get analysis result for a completed job.",
-)
-async def get_job_result_post(
-    job_request: JobsResultRequest,
-    current_user: UserContext = Depends(get_current_user),
-):
-    """Get analysis result for a completed job"""
-    log.info(
-        f"Fetching jobs result for request: {job_request}",
-        user_id=current_user.user_id,
-        tier=current_user.tier,
-    )
-    try:
-        res = await analysis_repository.get_jobs_result(job_request)
-        return res
-    except Exception as e:
-        log.error("Failed to fetch jobs result: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Failed to get Jobs"
+            detail="Failed to get document job status",
         )
 
 
 @router.get(
     "/jobs/result/{job_id}",
-    tags=["Job Result"],
-    description="Get analysis result for a completed job.",
+    response_model=DocumentAnalysisResult,
+    summary="Get document analysis result",
+    description="Get analysis result for a completed document analysis job.",
 )
-async def get_job_result(
+async def get_document_job_result(
     job_id: str,
     current_user: UserContext = Depends(get_current_user),
 ):
-    """Get analysis result for a completed job"""
+    """Get analysis result for a completed document analysis job"""
     log.info(
-        f"Fetching job result for job_id: {job_id}",
+        f"Fetching document job result for job_id: {job_id}",
         user_id=current_user.user_id,
         tier=current_user.tier,
     )
     try:
-        job_result_db = await analysis_repository.get_job_result(job_id)
-        if job_result_db is None:
+        job_result = await document_analysis_service.get_document_analysis_result(
+            job_id
+        )
+        if job_result is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Job result not found or not completed",
+                detail="Document analysis result not found or not completed",
             )
-        return job_result_db
+        return job_result
     except HTTPException:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="error when fetching job result",
+            detail="Error when fetching document analysis result",
         )
 
 
 @router.post(
     "/process/queued-jobs",
-    summary="Process queued analysis jobs",
-    description="Start background processing of queued interview analysis jobs",
+    summary="Process queued document analysis jobs",
+    description="Start background processing of queued document analysis jobs",
 )
-async def process_queued_jobs(
+async def process_queued_document_jobs(
     request: AsyncProcessQueuedJobs,
-    current_user: UserContext = Depends(get_current_user),
+    current_user: UserContext = Depends(require_admin),  # Admin only
 ):
-    """Trigger processing of queued analysis jobs"""
-
-    # Only allow admin users to trigger processing
-    # if current_user.tier != "admin":
-    #     raise HTTPException(
-    #         status_code=403, detail="Only admin users can trigger job processing"
-    #     )
-
+    """Trigger processing of queued document analysis jobs"""
     try:
         # Start job processing
-        result = await job_processor.process_queued_jobs(request)
+        result = await document_analysis_service.process_queued_document_jobs(
+            request.max_jobs
+        )
 
         return {
-            "message": "Job processing started",
-            "batch_id": result["batch_id"],
-            "jobs_found": result["processed"],
-            "estimated_time": f"{(result['processed'] / 2):.1f} minutes",  # Rough estimate
+            "message": "Document job processing started",
+            "batch_id": f"doc_batch_{int(time.time())}",
+            "jobs_processed": result["processed_count"],
+            "total_queued": result["total_queued"],
+            "results": result["results"],
         }
 
     except Exception as e:
-        if "already running" in str(e):
-            raise HTTPException(
-                status_code=409, detail="Job processor is already running"
-            )
         raise HTTPException(
-            status_code=500, detail=f"Failed to start job processing: {str(e)}"
+            status_code=500, detail=f"Failed to start document job processing: {str(e)}"
         )
 
 
-@router.get("/process/status")
-async def get_processor_status():
-    """Get current job processor status"""
-    return job_processor.get_processing_status()
+@router.get(
+    "/user/analyses",
+    summary="Get user's document analyses",
+    description="Retrieve document analysis history for the authenticated user.",
+)
+async def get_user_document_analyses(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get user's document analysis history"""
+    try:
+        analyses = await analysis_repository.get_user_document_analyses(
+            user_id=current_user.user_id
+        )
+
+        return {
+            "analyses": [analysis.to_dict() for analysis in analyses],
+            "total": len(analyses),
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as e:
+        log.error(f"Failed to get user document analyses: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get user document analyses",
+        )
+
+
+@router.get(
+    "/stats",
+    summary="Get document analysis statistics",
+    description="Get statistics about document analyses (admin only).",
+)
+async def get_document_stats(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: UserContext = Depends(require_admin),
+):
+    """Get document analysis statistics (admin only)"""
+    try:
+        from datetime import datetime, timedelta
+        from sqlalchemy import func
+
+        # Parse dates
+        start = (
+            datetime.fromisoformat(start_date)
+            if start_date
+            else datetime.utcnow() - timedelta(days=30)
+        )
+        end = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+
+        from app.database.models import DocumentAnalysisDB
+
+        # Get stats from database
+        session = analysis_repository.session
+
+        total_analyses = session.query(func.count(DocumentAnalysisDB.id)).scalar() or 0
+        completed_analyses = (
+            session.query(func.count(DocumentAnalysisDB.id))
+            .filter(DocumentAnalysisDB.status == "completed")
+            .scalar()
+            or 0
+        )
+
+        avg_score = (
+            session.query(func.avg(DocumentAnalysisDB.overall_score))
+            .filter(
+                DocumentAnalysisDB.status == "completed",
+                DocumentAnalysisDB.overall_score.isnot(None),
+            )
+            .scalar()
+            or 0
+        )
+
+        file_type_dist = (
+            session.query(
+                DocumentAnalysisDB.file_type, func.count(DocumentAnalysisDB.id)
+            )
+            .group_by(DocumentAnalysisDB.file_type)
+            .all()
+        )
+
+        recent_analyses = (
+            session.query(DocumentAnalysisDB)
+            .filter(
+                DocumentAnalysisDB.created_at >= start,
+                DocumentAnalysisDB.created_at <= end,
+            )
+            .order_by(DocumentAnalysisDB.created_at.desc())
+            .limit(100)
+            .all()
+        )
+
+        return {
+            "total_analyses": total_analyses,
+            "completed_analyses": completed_analyses,
+            "success_rate": round(
+                (
+                    (completed_analyses / total_analyses * 100)
+                    if total_analyses > 0
+                    else 0
+                ),
+                2,
+            ),
+            "average_score": round(float(avg_score), 2),
+            "file_type_distribution": dict(file_type_dist),  # type: ignore
+            "recent_analyses_count": len(recent_analyses),
+            "period": {"start": start.isoformat(), "end": end.isoformat()},
+        }
+
+    except Exception as e:
+        log.error(f"Failed to get document stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get document statistics",
+        )

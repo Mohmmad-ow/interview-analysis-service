@@ -94,7 +94,6 @@ class AnalysisRepository:
                     else 0.0
                 ),
                 status=status,
-                callback_url=callback_url,
                 processing_time=analysis_result.processing_time,
                 completed_at=(
                     datetime.now(timezone.utc) if status == "completed" else None
@@ -382,6 +381,125 @@ class AnalysisRepository:
             return "weakness"
         return "recommendation"
 
+    async def get_all_queued_document_jobs(self) -> List[DocumentAnalysisDB]:
+        """Retrieve all documents with status 'queued'"""
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.status == "queued")
+            .all()
+        )
+
+    async def update_document_job_status(self, id: str, status: str) -> bool:
+        """Update document analysis status by document ID"""
+        result = (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.job_id == id)
+            .update({"status": status})
+        )
+        return result > 0
+
+    async def update_document_analysis_status(
+        self, job_id: str, status: str, analysis_result: DocumentAnalysisResult
+    ) -> bool:
+        """Update document analysis status and result by job ID"""
+        result = (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.job_id == job_id)
+            .update(
+                {
+                    "status": status,
+                    "name": analysis_result.structured_data.name,
+                    "email": analysis_result.structured_data.email,
+                    "phone": analysis_result.structured_data.phone,
+                    "extracted_text": analysis_result.extracted_text,
+                    "overall_score": analysis_result.overall_score,
+                    "processing_time": analysis_result.processing_time,
+                    "completed_at": datetime.now(timezone.utc),
+                }
+            )
+        )
+        return result > 0
+
+    async def get_queued_jobs_filtered(self, limit: int = 10):
+        """Retrieve queued document jobs with optional limit"""
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.status == "queued")
+            .limit(limit)
+            .all()
+        )
+
+    async def get_document_analysis_by_ids(self, job_ids: List[str]):
+        """Get document analyses by a list of job IDs"""
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.job_id.in_(job_ids))
+            .all()
+        )
+
+    async def get_queued_document_jobs_by_user(self, user_id: str):
+        """
+        Get all queued document analysis jobs for a specific user
+        """
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(
+                DocumentAnalysisDB.user_id == user_id,
+                DocumentAnalysisDB.status == "queued",
+            )
+            .all()
+        )
+
+    async def get_queued_document_jobs_by_date(
+        self, start_date: datetime, end_date: datetime
+    ):
+        """Get all queued document analysis jobs within a date range"""
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(
+                DocumentAnalysisDB.status == "queued",
+                DocumentAnalysisDB.created_at >= start_date,
+                DocumentAnalysisDB.created_at <= end_date,
+            )
+            .all()
+        )
+
+    async def get_user_document_analyses(self, user_id: str):
+        """
+        Get all document analyses for a specific user
+        """
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.user_id == user_id)
+            .all()
+        )
+
+    async def get_document_job_status(self, job_id: str) -> Optional[Dict]:
+        """Get document job status by job ID"""
+        document = (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.job_id == job_id)
+            .first()
+        )
+        if document:
+            return {
+                "job_id": document.job_id,
+                "status": document.status,
+                "error_message": document.error_message,
+            }
+        return None
+
+    async def get_document_job_result(
+        self, job_id: str
+    ) -> Optional[DocumentAnalysisDB]:
+        """Retrieve document analysis job result by job ID"""
+        return (
+            self.session.query(DocumentAnalysisDB)
+            .filter(DocumentAnalysisDB.job_id == job_id)
+            .with_entities(DocumentAnalysisDB)
+            .first()
+        )
+
 
 class AuditRepository:
     def __init__(self, session: Session):
@@ -405,7 +523,9 @@ class AuditRepository:
 
         return query.order_by(AuditLog.timestamp.desc()).all()
 
-    async def update_job_status(self, id: int, status: str) -> bool:
+    async def update_job_status(
+        self, id: int, status: str, error_message: str = ""
+    ) -> bool:
         """Update job status by job ID"""
         result = (
             self.session.query(AuditLog)

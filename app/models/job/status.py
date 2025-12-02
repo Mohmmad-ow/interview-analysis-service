@@ -4,7 +4,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.models.analysis.request import QueuedJobType
-from app.models.analysis.response import AnalysisResult
+from app.models.analysis.response import DocumentAnalysisResult
 from app.models.shared.base import ErrorResponse
 
 
@@ -104,7 +104,7 @@ class JobsResultRequest(BaseModel):
 
 class JobResultResponse(BaseModel):
     job_id: str = Field(..., description="Unique identifier for the analysis job")
-    analysis_result: AnalysisResult = Field(
+    analysis_result: DocumentAnalysisResult = Field(
         ..., description="Detailed analysis result of the interview"
     )
 
@@ -114,12 +114,34 @@ class JobResultResponse(BaseModel):
                 {
                     "job_id": "job_123456",
                     "analysis_result": {
-                        "transcript": "the transcript of the interview",
-                        "technical_score": 7.5,
-                        "communication_score": 6.4,
-                        "confidence_indicators": {"straight speech": 9.4},
-                        "key_insights": ["Great Technical Knowledge"],
-                        "processing_time": 65,
+                        "extracted_text": "John Doe\nSoftware Engineer...",
+                        "structured_data": {
+                            "name": "John Doe",
+                            "email": "john.doe@email.com",
+                            "skills": ["Python", "FastAPI", "SQL"],
+                        },
+                        "overall_score": 82.5,
+                        "score_breakdown": {
+                            "skills_score": 85.5,
+                            "experience_score": 72.0,
+                            "education_score": 90.0,
+                            "overall_fit": 82.5,
+                        },
+                        "skills_match": {
+                            "required_skills_matched": ["Python", "FastAPI"],
+                            "missing_required_skills": ["AWS"],
+                            "skill_match_percentage": 66.7,
+                        },
+                        "key_insights": [
+                            "Strong Python and FastAPI experience",
+                            "Missing AWS experience which is required",
+                            "Excellent educational background",
+                        ],
+                        "processing_time": 15.2,
+                        "confidence_scores": {
+                            "name_extraction": 0.95,
+                            "skills_extraction": 0.88,
+                        },
                     },
                 }
             ]

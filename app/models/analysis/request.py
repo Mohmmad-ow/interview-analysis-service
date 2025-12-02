@@ -106,3 +106,4 @@ class AsyncProcessQueuedJobs(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     callback_url: Optional[HttpUrl] = None
+    max_jobs: int = Field(default=10, ge=1, le=100)

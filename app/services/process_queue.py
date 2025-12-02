@@ -1,16 +1,23 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
+from enum import Enum
+
 from app.core.logging import log_info, log_error, log_warning
-from app.database.models import AnalysisResultDB
+from app.database.models import DocumentAnalysisDB
 from app.models.analysis.request import AsyncProcessQueuedJobs, QueuedJobType
-from app.models.analysis.response import AnalysisResult
+from app.models.analysis.response import DocumentAnalysisResult
 from app.models.audit.request import AuditAction, AuditLog
-from app.services.whisper_service import whisper_service
 from app.services.GeminiAnalysis import gemini_service
+from app.services.analysis import document_analysis_service
 from app.database.repository import analysis_repository, audit_repository
+
+
+class JobType(str, Enum):
+    INTERVIEW = "interview"
+    DOCUMENT = "document"
 
 
 class JobProcessor:
@@ -20,6 +27,7 @@ class JobProcessor:
         self.thread_pool = ThreadPoolExecutor(max_workers=max_concurrent_jobs)
         self._is_processing = False
         self._current_batch_id = None
+        self._current_job_type = None
 
     async def process_queued_jobs(
         self, queued_jobs_request: AsyncProcessQueuedJobs
@@ -30,9 +38,13 @@ class JobProcessor:
 
         self._is_processing = True
         self._current_batch_id = f"batch_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        self._current_job_type = queued_jobs_request.job_type
 
         try:
-            log_info(f"Starting job processing batch: {self._current_batch_id}")
+            log_info(
+                f"Starting job processing batch: {self._current_batch_id}, "
+                f"type: {queued_jobs_request.job_type}"
+            )
 
             # 1. Fetch jobs based on criteria
             jobs = await self._fetch_jobs(queued_jobs_request)
@@ -71,29 +83,42 @@ class JobProcessor:
         finally:
             self._is_processing = False
             self._current_batch_id = None
+            self._current_job_type = None
 
     async def _fetch_jobs(
         self, request: AsyncProcessQueuedJobs
-    ) -> List[AnalysisResultDB]:
-        """Fetch jobs based on request type using repository pattern"""
+    ) -> List[DocumentAnalysisDB]:
+        """Fetch jobs based on request type and job type"""
+        return await self._fetch_document_jobs(request)
 
+    async def _fetch_document_jobs(
+        self, request: AsyncProcessQueuedJobs
+    ) -> List[DocumentAnalysisDB]:
+        """Fetch document analysis jobs"""
         if request.job_type == QueuedJobType.PROCESSVIAIDS and request.job_ids:
-            return await analysis_repository.get_analysis_by_ids(request.job_ids)
+            return await analysis_repository.get_document_analysis_by_ids(
+                request.job_ids
+            )
         elif request.job_type == QueuedJobType.PROCESSALL:
-            return await analysis_repository.get_all_queued_jobs()
+            return await analysis_repository.get_all_queued_document_jobs()
         elif request.job_type == QueuedJobType.PROCESSVIAUSER:
-            return await analysis_repository.get_queued_jobs_by_user(request.user_id)
+            return await analysis_repository.get_queued_document_jobs_by_user(
+                request.user_id
+            )
         elif (
             request.job_type == QueuedJobType.PROCESSVIADATE
             and request.start_date
             and request.end_date
         ):
-            return await analysis_repository.get_queued_jobs_by_date(
+            # You'll need to implement get_queued_document_jobs_by_date in repository
+            return await analysis_repository.get_queued_document_jobs_by_date(
                 request.start_date, request.end_date
             )
         return []
 
-    async def _process_job_batch(self, jobs: List[AnalysisResultDB]) -> Dict[str, int]:
+    async def _process_job_batch(
+        self, jobs: List[DocumentAnalysisDB]
+    ) -> Dict[str, int]:
         """Process a batch of jobs with concurrency control"""
         successful = 0
         failed = 0
@@ -108,7 +133,10 @@ class JobProcessor:
             # Create tasks for current batch
             batch_tasks = []
             for job in batch:
-                task = asyncio.create_task(self._process_single_job_with_semaphore(job))
+                task = asyncio.create_task(
+                    self._process_single_document_job_with_semaphore(job)
+                )
+
                 batch_tasks.append(task)
 
             # Wait for batch completion
@@ -117,10 +145,14 @@ class JobProcessor:
             # Count results
             for job, result in zip(batch, batch_results):
                 if isinstance(result, Exception):
-                    log_error(f"Job {job.job_id} failed: {result}")
+                    log_error(
+                        f"Job {getattr(job, 'job_id', 'unknown')} failed: {result}"
+                    )
                     failed += 1
                 else:
-                    log_info(f"Job {job.job_id} completed successfully")
+                    log_info(
+                        f"Job {getattr(job, 'job_id', 'unknown')} completed successfully"
+                    )
                     successful += 1
 
             log_info(
@@ -133,24 +165,35 @@ class JobProcessor:
 
         return {"successful": successful, "failed": failed}
 
-    async def _process_single_job_with_semaphore(self, job: AnalysisResultDB):
-        """Process a single job with concurrency control"""
+    # ==================== DOCUMENT JOB PROCESSING ====================
+
+    async def _process_single_document_job_with_semaphore(
+        self, job: DocumentAnalysisDB
+    ):
+        """Process a single document job with concurrency control"""
         async with self.semaphore:
-            return await self._process_single_job(job)
+            return await self._process_single_document_job(job)
 
-    async def _process_single_job(self, job: AnalysisResultDB):
-        """Process a single analysis job from queued to completed"""
-
+    async def _process_single_document_job(self, job: DocumentAnalysisDB):
+        """Process a single document analysis job from queued to completed"""
         try:
             # 1. Update status to processing
-            await analysis_repository.update_job_status(str(job.job_id), "processing")
-            log_info(f"Started processing job {job.job_id}")
+            await analysis_repository.update_document_job_status(
+                id=str(job.job_id), status="processing"
+            )
+            log_info(f"Started processing document job {job.job_id}")
 
-            # 2. Perform the actual analysis
-            analysis_result = await self._perform_complete_analysis(job)
+            # 2. Perform the actual analysis using document analysis service
+            analysis_result = await document_analysis_service.analyze_document_file(
+                file_path=str(job.file_url),
+                job_description=job.job_description,
+                required_skills=job.required_skills or [],
+                preferred_skills=job.preferred_skills or [],
+                file_type=str(job.file_type),
+            )
 
             # 3. Save the completed results
-            await analysis_repository.update_analysis_status(
+            await analysis_repository.update_document_analysis_status(
                 job_id=str(job.job_id),
                 status="completed",
                 analysis_result=analysis_result,
@@ -161,23 +204,26 @@ class JobProcessor:
                 AuditLog(
                     user_id=str(job.user_id),
                     action=AuditAction.ANALYSIS_COMPLETED,
-                    resource_pattern=str(job.audio_url),
+                    resource_pattern=str(job.file_url),
                     success_only=True,
                     metadata={
                         "job_id": job.job_id,
                         "processing_time": analysis_result.processing_time,
-                        "technical_score": analysis_result.technical_score,
+                        "overall_score": analysis_result.overall_score,
+                        "job_type": "document",
                     },
                 )
             )
 
-            log_info(f"Successfully completed job {job.job_id}")
+            log_info(f"Successfully completed document job {job.job_id}")
             return analysis_result
 
         except Exception as e:
             # 5. Handle failures
-            log_error(f"Failed to process job {job.job_id}: {str(e)}")
-            await analysis_repository.update_job_status(str(job.job_id), "failed")
+            log_error(f"Failed to process document job {job.job_id}: {str(e)}")
+            await analysis_repository.update_document_job_status(
+                id=str(job.job_id), status="failed"
+            )
 
             # Log error
             await audit_repository.log_error(
@@ -185,68 +231,13 @@ class JobProcessor:
                 job_id=str(job.job_id),
                 error_type=type(e).__name__,
                 error_message=str(e),
-                stack_trace="",  # You can add proper traceback here
-                request_data={"audio_url": job.audio_url},
+                stack_trace="",
+                request_data={
+                    "file_url": str(job.file_url),
+                    "file_type": job.file_type,
+                    "job_type": "document",
+                },
             )
-            raise e
-
-    async def _perform_complete_analysis(self, job: AnalysisResultDB) -> AnalysisResult:
-        """Complete analysis pipeline for a single job"""
-        start_time = asyncio.get_event_loop().time()
-
-        try:
-            # 1. Transcription
-            log_info(f"Starting transcription for job {job.job_id}")
-
-            if str(job.audio_url).startswith(("http://", "https://")):
-                transcript, transcription_time = (
-                    await whisper_service.transcribe_audio_url(
-                        str(job.audio_url),
-                    )
-                )
-            else:
-                transcript, transcription_time = (
-                    await whisper_service.transcribe_local_file(str(job.audio_url))
-                )
-
-            log_info(
-                f"Transcription completed for job {job.job_id}: {len(transcript)} characters"
-            )
-
-            # 2. Get job description and questions from stored data
-            job_description = getattr(job, "job_description", "")
-            questions = getattr(job, "questions", [])
-
-            if not job_description:
-                raise ValueError("Job description missing from queued job")
-
-            # 3. Gemini Analysis
-            log_info(f"Starting Gemini analysis for job {job.job_id}")
-
-            gemini_analysis = await gemini_service.analyze_interview(
-                transcript=transcript,
-                job_description=job_description,
-                questions=questions if questions else None,
-            )
-
-            # 4. Calculate total processing time
-            total_processing_time = asyncio.get_event_loop().time() - start_time
-
-            # 5. Create final result
-            analysis_result = AnalysisResult(
-                transcript=transcript,
-                technical_score=gemini_analysis["technical_score"],
-                communication_score=gemini_analysis["communication_score"],
-                confidence_indicators=gemini_analysis["confidence_indicators"],
-                key_insights=gemini_analysis["key_insights"],
-                processing_time=total_processing_time,
-            )
-
-            log_info(f"Analysis completed for job {job.job_id}")
-            return analysis_result
-
-        except Exception as e:
-            log_error(f"Analysis pipeline failed for job {job.job_id}: {str(e)}")
             raise e
 
     def get_processing_status(self) -> Dict[str, Any]:
@@ -254,6 +245,7 @@ class JobProcessor:
         return {
             "is_processing": self._is_processing,
             "current_batch_id": self._current_batch_id,
+            "current_job_type": self._current_job_type,
             "max_concurrent_jobs": self.max_concurrent_jobs,
             "timestamp": datetime.utcnow().isoformat(),
         }

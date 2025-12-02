@@ -1,4 +1,4 @@
 from .analysis.request import InterviewAnalysisRequest
-from .analysis.response import AnalysisResult, AsyncAnalysisResponse
+from .analysis.response import DocumentAnalysisResult
 
-__all__ = ["InterviewAnalysisRequest", "AnalysisResult", "AsyncAnalysisResponse"]
+__all__ = ["InterviewAnalysisRequest", "DocumentAnalysisResult"]

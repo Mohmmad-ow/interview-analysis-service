@@ -69,26 +69,26 @@ class DocumentAnalysisDB(Base):
     file_type = Column(String(20), nullable=False)
 
     # Basic extracted fields
-    extracted_text = Column(Text)
-    candidate_name = Column(String(200))
-    candidate_email = Column(String(200))
-    candidate_phone = Column(String(50))
+    extracted_text = Column(Text, nullable=True)
+    candidate_name = Column(String(200), nullable=True)
+    candidate_email = Column(String(200), nullable=True)
+    candidate_phone = Column(String(50), nullable=True)
 
     # Simple scores
-    overall_score = Column(Float)
-    skills_score = Column(Float)
-    experience_score = Column(Float)
-    education_score = Column(Float)
+    overall_score = Column(Float, nullable=True)
+    skills_score = Column(Float, nullable=True)
+    experience_score = Column(Float, nullable=True)
+    education_score = Column(Float, nullable=True)
 
     # Processing metadata
     status = Column(String(20), default="pending")
-    processing_time = Column(Float)
-    error_message = Column(Text)
+    processing_time = Column(Float, nullable=True)
+    error_message = Column(Text, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
-    started_at = Column(DateTime)
-    completed_at = Column(DateTime)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class DocumentEducationDB(Base):

@@ -3,8 +3,9 @@ from sre_constants import ANY
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, HTTPBearer
+from app.models.analysis.response import DocumentAnalysisResult
 from app.models.auth.auth import UserContext, UserTier
-from app.services.analysis import AnalysisService
+from app.services.analysis import document_analysis_service, DocumentAnalysisService
 from app.services.auth import auth_service
 from sqlalchemy.orm import Session
 from app.database.connection import db_manager
@@ -111,5 +112,5 @@ def get_audit_repository(db: Session = Depends(get_db_session)) -> AuditReposito
 def get_analysis_service(
     analysis_repo: AnalysisRepository = Depends(get_analysis_repository),
     audit_repo: AuditRepository = Depends(get_audit_repository),
-) -> AnalysisService:
-    return AnalysisService(analysis_repo, audit_repo)
+) -> DocumentAnalysisService:
+    return DocumentAnalysisService(analysis_repo, audit_repo)
