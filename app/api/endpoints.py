@@ -3,6 +3,8 @@ from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException,
 from typing import Optional, List
 import json
 
+from fastapi.params import Query
+
 from app.database.error_logger import error_logger
 from app.database.audit_logger import audit_logger
 from app.models.analysis.request import (
@@ -11,6 +13,8 @@ from app.models.analysis.request import (
     DocumentBatchAnalysisRequest,
 )
 from app.models.job.status import (
+    DocumentJobsResultRequest,
+    DocumentJobsResultResponse,
     JobStatusResponse,
     JobsResultRequest,
     JobsStatusResponse,
@@ -22,6 +26,7 @@ from app.models.analysis.response import (
     DocumentBatchAnalysisResult,
 )
 from app.services.auth import auth_service
+from app.services.process_queue import JobProcessor
 from app.services.rate_limiter import rate_limiter, RateLimitExceeded
 from app.models.auth import UserContext, UserTier
 from app.api.dependencies import (
@@ -30,8 +35,9 @@ from app.api.dependencies import (
     require_premium,
     require_admin,
 )
+from app.services.process_queue import job_processor
 from app.database.repository import analysis_repository, audit_repository
-from app.core.logging import log
+from app.core.logging import log, log_error
 
 # Create router instance
 router = APIRouter(prefix="/documents", tags=["Document Analysis"])
@@ -421,6 +427,79 @@ async def get_document_job_result(
         )
 
 
+# app/api/routers/documents.py
+
+
+@router.post(
+    "/jobs/result",
+    response_model=DocumentJobsResultResponse,
+    summary="Get document analysis results with filtering",
+    description="Retrieve document analysis results with filtering, sorting, and pagination.",
+)
+async def get_document_jobs_result(
+    request: DocumentJobsResultRequest,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get multiple document analysis results with filtering"""
+    log.info(
+        f"Fetching document jobs result with filters for user: {current_user.user_id}",
+        user_id=current_user.user_id,
+        filters=request.dict(exclude_none=True),
+    )
+    try:
+        return await document_analysis_service.get_document_jobs_result(
+            request, current_user
+        )
+    except Exception as e:
+        log_error(f"Failed to get document jobs result: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get document jobs result",
+        )
+
+
+@router.get(
+    "/search",
+    summary="Search document analyses",
+    description="Search document analyses by candidate name, email, or content.",
+)
+async def search_document_analyses(
+    search_term: Optional[str] = None,
+    min_score: Optional[float] = None,
+    max_score: Optional[float] = None,
+    file_type: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Search document analyses with various filters"""
+    try:
+        results, total_count = await analysis_repository.search_document_analyses(
+            search_term=search_term,
+            min_score=min_score,
+            max_score=max_score,
+            file_type=file_type,
+            user_id=current_user.user_id if current_user.tier != "admin" else None,
+            limit=limit,
+            offset=offset,
+        )
+
+        return {
+            "results": results,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < total_count,
+        }
+
+    except Exception as e:
+        log_error(f"Failed to search document analyses: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to search document analyses",
+        )
+
+
 @router.post(
     "/process/queued-jobs",
     summary="Process queued document analysis jobs",
@@ -433,14 +512,12 @@ async def process_queued_document_jobs(
     """Trigger processing of queued document analysis jobs"""
     try:
         # Start job processing
-        result = await document_analysis_service.process_queued_document_jobs(
-            request.max_jobs
-        )
+        result = await job_processor.process_queued_jobs(request)
 
         return {
             "message": "Document job processing started",
-            "batch_id": f"doc_batch_{int(time.time())}",
-            "jobs_processed": result["processed_count"],
+            "batch_id": result["batch_id"],
+            "jobs_processed": result["processed_jobs"],
             "total_queued": result["total_queued"],
             "results": result["results"],
         }

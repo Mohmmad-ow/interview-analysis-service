@@ -19,10 +19,12 @@ from app.models.analysis.response import (
     SkillsMatch,
     StructuredResumeData,
 )  # ADD DocumentAnalysisResult
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from app.database.connection import db_manager
 from app.models.audit.request import AuditLog as AuditLogModel
 from app.models.job.status import (
+    DocumentJobsResultRequest,
+    DocumentJobsResultResponse,
     JobResultResponse,
     JobStatusResponse,
     JobsResultRequest,
@@ -30,6 +32,8 @@ from app.models.job.status import (
     JobsStatusResponse,
     RequestJobsStatus,
 )
+from sqlalchemy.orm import joinedload, contains_eager
+from sqlalchemy import or_, and_
 
 # app/database/repository.py - Improved document methods
 
@@ -491,14 +495,194 @@ class AnalysisRepository:
 
     async def get_document_job_result(
         self, job_id: str
-    ) -> Optional[DocumentAnalysisDB]:
-        """Retrieve document analysis job result by job ID"""
-        return (
-            self.session.query(DocumentAnalysisDB)
-            .filter(DocumentAnalysisDB.job_id == job_id)
-            .with_entities(DocumentAnalysisDB)
-            .first()
-        )
+    ) -> Optional[DocumentAnalysisResult]:
+        """Retrieve document analysis job result with all related entities"""
+        try:
+            # Use joinedload to fetch all related data in one query
+            result = (
+                self.session.query(DocumentAnalysisDB)
+                .options(
+                    joinedload(DocumentAnalysisDB.education_records),
+                    joinedload(DocumentAnalysisDB.work_experience_records),
+                    joinedload(DocumentAnalysisDB.skills_records),
+                    joinedload(DocumentAnalysisDB.skills_match_records),
+                    joinedload(DocumentAnalysisDB.key_insights_records),
+                )
+                .filter(
+                    DocumentAnalysisDB.job_id == job_id,
+                    DocumentAnalysisDB.status == "completed",
+                )
+                .first()
+            )
+
+            if not result:
+                return None
+
+            # Convert to DocumentAnalysisResult Pydantic model
+            return await self.parse_document_analysis_result(result)
+
+        except Exception as e:
+            log_error(f"Failed to get document job result for {job_id}: {e}")
+            return None
+
+    async def get_document_jobs_result(
+        self, request: DocumentJobsResultRequest
+    ) -> DocumentJobsResultResponse:
+        """Get document job results with filtering, pagination, and related data"""
+        try:
+            # Base query with joins
+            query = (
+                self.session.query(DocumentAnalysisDB)
+                .outerjoin(
+                    DocumentEducationDB,
+                    DocumentAnalysisDB.id == DocumentEducationDB.document_id,
+                )
+                # Join work experience records
+                .outerjoin(
+                    DocumentWorkExperienceDB,
+                    DocumentAnalysisDB.id == DocumentWorkExperienceDB.document_id,
+                )
+                # Join skills records
+                .outerjoin(
+                    DocumentSkillsDB,
+                    DocumentAnalysisDB.id == DocumentSkillsDB.document_id,
+                )
+                # Join skills match records
+                .outerjoin(
+                    DocumentSkillsMatchDB,
+                    DocumentAnalysisDB.id == DocumentSkillsMatchDB.document_id,
+                )
+                # Join key insights records
+                .outerjoin(
+                    DocumentKeyInsightsDB,
+                    DocumentAnalysisDB.id == DocumentKeyInsightsDB.document_id,
+                )
+                .filter(DocumentAnalysisDB.status == "completed")
+            )
+
+            # Apply filters
+            query = self._apply_document_filters(query, request)
+
+            # Get total count before pagination
+            total_count = query.count()
+
+            # Apply pagination
+            query = query.order_by(DocumentAnalysisDB.created_at.desc())
+            query = query.offset(request.offset).limit(request.limit)
+
+            # Execute query
+            results = query.all()
+
+            # Calculate pagination info
+            pages = (total_count + request.limit - 1) // request.limit
+            current_page = (request.offset // request.limit) + 1
+
+            # Parse results to Pydantic models
+            parsed_results = []
+            for result in results:
+                try:
+                    parsed_result = await self.parse_document_analysis_result(result)
+                    parsed_results.append(parsed_result)
+                except Exception as e:
+                    log_error(f"Failed to parse document result {result.job_id}: {e}")
+                    continue
+
+            # Build response
+            return DocumentJobsResultResponse(
+                jobs=parsed_results,
+                total_count=total_count,
+                offset=request.offset,
+                limit=request.limit,
+                pages=pages,
+                current_page=current_page,
+            )
+
+        except Exception as e:
+            log_error(f"Failed to get document jobs result: {e}")
+            raise
+
+    def _apply_document_filters(self, query, request: DocumentJobsResultRequest):
+        """Apply filters to document query"""
+        if request.job_ids:
+            query = query.filter(DocumentAnalysisDB.job_id.in_(request.job_ids))
+
+        if request.user_id:
+            query = query.filter(DocumentAnalysisDB.user_id == request.user_id)
+
+        if request.start_date and request.end_date:
+            query = query.filter(
+                DocumentAnalysisDB.created_at >= request.start_date,
+                DocumentAnalysisDB.created_at <= request.end_date,
+            )
+
+        if hasattr(request, "min_score") and request.min_score is not None:
+            query = query.filter(DocumentAnalysisDB.overall_score >= request.min_score)
+
+        if hasattr(request, "max_score") and request.max_score is not None:
+            query = query.filter(DocumentAnalysisDB.overall_score <= request.max_score)
+
+        if hasattr(request, "file_type") and request.file_type:
+            query = query.filter(DocumentAnalysisDB.file_type == request.file_type)
+
+        return query
+
+    async def search_document_analyses(
+        self,
+        search_term: Optional[str] = None,
+        min_score: Optional[float] = None,
+        max_score: Optional[float] = None,
+        file_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[DocumentAnalysisResult], int]:
+        """Search document analyses with advanced filtering"""
+        try:
+            query = (
+                self.session.query(DocumentAnalysisDB)
+                .options(joinedload(DocumentAnalysisDB.skills_records))
+                .filter(DocumentAnalysisDB.status == "completed")
+            )
+
+            # Apply filters
+            if search_term:
+                search_filter = or_(
+                    DocumentAnalysisDB.candidate_name.ilike(f"%{search_term}%"),
+                    DocumentAnalysisDB.candidate_email.ilike(f"%{search_term}%"),
+                    DocumentAnalysisDB.extracted_text.ilike(f"%{search_term}%"),
+                )
+                query = query.filter(search_filter)
+
+            if min_score is not None:
+                query = query.filter(DocumentAnalysisDB.overall_score >= min_score)
+
+            if max_score is not None:
+                query = query.filter(DocumentAnalysisDB.overall_score <= max_score)
+
+            if file_type:
+                query = query.filter(DocumentAnalysisDB.file_type == file_type)
+
+            if user_id:
+                query = query.filter(DocumentAnalysisDB.user_id == user_id)
+
+            # Get total count
+            total_count = query.count()
+
+            # Apply pagination
+            query = query.order_by(DocumentAnalysisDB.overall_score.desc())
+            query = query.offset(offset).limit(limit)
+
+            # Execute and parse results
+            results = query.all()
+            parsed_results = [
+                await self.parse_document_analysis_result(result) for result in results
+            ]
+
+            return parsed_results, total_count
+
+        except Exception as e:
+            log_error(f"Failed to search document analyses: {e}")
+            raise
 
 
 class AuditRepository:

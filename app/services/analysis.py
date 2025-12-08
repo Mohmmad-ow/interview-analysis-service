@@ -27,6 +27,7 @@ from app.models.analysis.response import (
 )
 from app.models.auth import UserContext
 from app.core.logging import log, log_error, log_info
+from app.models.job.status import DocumentJobsResultRequest, DocumentJobsResultResponse
 from app.services.document_parser import document_parser
 from app.services.GeminiAnalysis import gemini_service
 
@@ -136,7 +137,7 @@ class DocumentAnalysisService:
 
             audit_id = auditRes.id
             await self.audit_repo.update_job_status(
-                int(audit_id),
+                int(audit_id),  # type: ignore
                 AuditAction.ANALYSIS_COMPLETED,  # type: ignore
             )
 
@@ -349,25 +350,33 @@ class DocumentAnalysisService:
             log_error(f"Failed to process queued document jobs: {e}")
             raise
 
+    # In app/services/document_analysis.py
+
     async def get_document_analysis_result(
         self, job_id: str
     ) -> Optional[DocumentAnalysisResult]:
-        """Get document analysis result by job ID"""
+        """Get document analysis result by job ID with all related data"""
         try:
-            analysis_result = await self.analysis_repo.get_document_job_result(job_id)
-            skills_match = SkillsMatch(**analysis_result["skills_match"])
-            structured_data = StructuredResumeData(**analysis_result["structured_data"])
+            # This now returns a fully parsed DocumentAnalysisResult
+            return await self.analysis_repo.get_document_job_result(job_id)
         except Exception as e:
             log_error(f"Failed to get document analysis result for {job_id}: {e}")
             return None
 
-    async def get_document_job_status(self, job_id: str) -> Optional[Dict]:
-        """Get document job status by job ID"""
+    async def get_document_jobs_result(
+        self, request: DocumentJobsResultRequest, user: Optional[UserContext] = None
+    ) -> DocumentJobsResultResponse:
+        """Get multiple document analysis results with filtering"""
         try:
-            return await self.analysis_repo.get_document_job_status(job_id)
+            # If user is provided, filter by user_id unless admin
+            # if user and user.tier != "admin":
+            #     request.user_id = user.user_id
+
+            return await self.analysis_repo.get_document_jobs_result(request)
+
         except Exception as e:
-            log_error(f"Failed to get document job status for {job_id}: {e}")
-            return None
+            log_error(f"Failed to get document jobs result: {e}")
+            raise
 
 
 # Global service instance

@@ -173,3 +173,28 @@ class JobsStatusResponse(BaseModel):
     limit: int = Field(description="Pagination limit", default=10)
     pages: int = Field(..., description="Total number of pages")
     current_page: int = Field(..., description="Current page number")
+
+
+class DocumentJobsResultRequest(BaseModel):
+    """Request model for document jobs result with filtering"""
+
+    job_ids: Optional[List[str]] = None
+    user_id: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    min_score: Optional[float] = Field(None, ge=0, le=100)
+    max_score: Optional[float] = Field(None, ge=0, le=100)
+    file_type: Optional[str] = None
+    limit: int = Field(default=50, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
+class DocumentJobsResultResponse(BaseModel):
+    """Response model for document jobs result"""
+
+    jobs: List["DocumentAnalysisResult"]  # Your DocumentAnalysisResult model
+    total_count: int
+    offset: int
+    limit: int
+    pages: int
+    current_page: int

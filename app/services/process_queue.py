@@ -15,11 +15,6 @@ from app.services.analysis import document_analysis_service
 from app.database.repository import analysis_repository, audit_repository
 
 
-class JobType(str, Enum):
-    INTERVIEW = "interview"
-    DOCUMENT = "document"
-
-
 class JobProcessor:
     def __init__(self, max_concurrent_jobs: int = 3):
         self.max_concurrent_jobs = max_concurrent_jobs
