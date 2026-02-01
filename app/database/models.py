@@ -10,6 +10,7 @@ from sqlalchemy import (
     Text,
     JSON,
 )
+from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime, timezone
 import uuid
@@ -73,6 +74,9 @@ class DocumentAnalysisDB(Base):
     candidate_name = Column(String(200), nullable=True)
     candidate_email = Column(String(200), nullable=True)
     candidate_phone = Column(String(50), nullable=True)
+    
+    # candidate interview questions
+    candidate_questions = Column(JSON, nullable=True)
 
     # Simple scores
     overall_score = Column(Float, nullable=True)
@@ -89,6 +93,13 @@ class DocumentAnalysisDB(Base):
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    
+    # foreign key relationships
+    education_records = relationship("DocumentEducationDB", backref="document_analysis")
+    work_experience_records = relationship("DocumentWorkExperienceDB", backref="document_analysis")
+    skills_records = relationship("DocumentSkillsDB", backref="document_analysis")
+    skills_match_records = relationship("DocumentSkillsMatchDB", backref="document_analysis")
+    key_insights_records = relationship("DocumentKeyInsightsDB", backref="document_analysis")
 
 
 class DocumentEducationDB(Base):

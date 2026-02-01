@@ -57,6 +57,8 @@ class AuthService:
 
     def verify_token(self, token: str) -> UserContext:
         """Verify JWT token and return user context"""
+        
+        print(f"DEBUG: Verifying with Secret: '{self.secret_key}' (Length: {len(self.secret_key)})")
         try:
             # Decode and verify all claims
             payload = jwt.decode(

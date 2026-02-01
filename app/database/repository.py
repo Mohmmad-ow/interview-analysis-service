@@ -1,4 +1,5 @@
 from datetime import timezone, datetime, timedelta
+import json
 from httpcore import stream
 from sqlalchemy.orm import Session
 from app.core.logging import log_error
@@ -55,9 +56,11 @@ class AnalysisRepository:
         required_skills: Optional[List[str]],
         preferred_skills: Optional[List[str]],
         analysis_result: DocumentAnalysisResult,
+        questions_for_interview: Optional[List[str]] = None,
         status: str = "completed",
+        
     ) -> DocumentAnalysisDB:
-        """Save document analysis result with normalized data"""
+        """Save document analysis result with normalized data and interview questions"""
         try:
             # Create main document analysis record
             db_document = DocumentAnalysisDB(
@@ -66,6 +69,9 @@ class AnalysisRepository:
                 file_url=file_url,
                 file_type=file_type,
                 extracted_text=analysis_result.extracted_text,
+                candidate_questions=(
+                    json.dumps(questions_for_interview) if questions_for_interview else None
+                ),
                 candidate_name=(
                     analysis_result.structured_data.name
                     if analysis_result.structured_data
@@ -192,7 +198,7 @@ class AnalysisRepository:
     async def parse_document_analysis_result(
         self, result: DocumentAnalysisDB
     ) -> DocumentAnalysisResult:
-        """Robust parsing with proper error handling and eager loading"""
+        """Robust parsing with proper error handling and interview questions"""
         try:
             # Eager load all related data
             education_records = await self._get_education_for_document(str(result.id))
@@ -202,12 +208,20 @@ class AnalysisRepository:
                 str(result.id)
             )
             insights_records = await self._get_insights_for_document(str(result.id))
+            
+            # Parse interview questions
+            questions_for_interview = None
+            if result.candidate_questions != None:
+                try:
+                    questions_for_interview = json.loads(result.candidate_questions)
+                except (json.JSONDecodeError, TypeError):
+                    questions_for_interview = None
 
             # Build structured data
             structured_data = StructuredResumeData(
-                name=str(result.candidate_name),
-                email=str(result.candidate_email),
-                phone=str(result.candidate_phone),
+                name=str(result.candidate_name) if str(result.candidate_name) else None,
+                email=str(result.candidate_email) if str(result.candidate_email) else None,
+                phone=str(result.candidate_phone) if str(result.candidate_phone) else None,
                 education=education_records,
                 work_experience=work_records,
                 skills=[str(skill.skill_name) for skill in skill_records],
@@ -260,6 +274,7 @@ class AnalysisRepository:
                 key_insights=key_insights,
                 processing_time=float(result.processing_time) or 0.0,  # type: ignore
                 confidence_scores={},  # You can add confidence tracking if needed
+                question_for_interview=questions_for_interview,
             )
 
         except Exception as e:
@@ -335,6 +350,13 @@ class AnalysisRepository:
         self, result: DocumentAnalysisDB
     ) -> DocumentAnalysisResult:
         """Create a safe default result when parsing fails"""
+        questions_for_interview = None
+        if result.candidate_questions != None:
+            try:
+                questions_for_interview: List[str] | None = json.loads(result.candidate_questions)
+            except (json.JSONDecodeError, TypeError):
+                questions_for_interview = None
+        
         return DocumentAnalysisResult(
             extracted_text=str(result.extracted_text) or "",
             structured_data=StructuredResumeData(
@@ -363,6 +385,7 @@ class AnalysisRepository:
             key_insights=[],
             processing_time=result.processing_time or 0.0,  # type: ignore
             confidence_scores={},
+            question_for_interview=questions_for_interview,
         )
 
     def _categorize_skill(self, skill: str) -> str:
@@ -406,21 +429,27 @@ class AnalysisRepository:
         self, job_id: str, status: str, analysis_result: DocumentAnalysisResult
     ) -> bool:
         """Update document analysis status and result by job ID"""
+        update_data = {
+            "status": status,
+            "candidate_name": analysis_result.structured_data.name,
+            "candidate_email": analysis_result.structured_data.email,
+            "candidate_phone": analysis_result.structured_data.phone,
+            "extracted_text": analysis_result.extracted_text,
+            "overall_score": analysis_result.overall_score,
+            "processing_time": analysis_result.processing_time,
+            "completed_at": datetime.now(timezone.utc),
+        }
+        
+        # Include interview questions if present
+        if analysis_result.question_for_interview:
+            update_data["candidate_questions"] = json.dumps(
+                analysis_result.question_for_interview
+            )
+        
         result = (
             self.session.query(DocumentAnalysisDB)
             .filter(DocumentAnalysisDB.job_id == job_id)
-            .update(
-                {
-                    "status": status,
-                    "name": analysis_result.structured_data.name,
-                    "email": analysis_result.structured_data.email,
-                    "phone": analysis_result.structured_data.phone,
-                    "extracted_text": analysis_result.extracted_text,
-                    "overall_score": analysis_result.overall_score,
-                    "processing_time": analysis_result.processing_time,
-                    "completed_at": datetime.now(timezone.utc),
-                }
-            )
+            .update(update_data) # type: ignore
         )
         return result > 0
 
@@ -482,7 +511,7 @@ class AnalysisRepository:
         """Get document job status by job ID"""
         document = (
             self.session.query(DocumentAnalysisDB)
-            .filter(DocumentAnalysisDB.job_id == job_id)
+            .filter(DocumentAnalysisDB.id == job_id)
             .first()
         )
         if document:
@@ -496,7 +525,7 @@ class AnalysisRepository:
     async def get_document_job_result(
         self, job_id: str
     ) -> Optional[DocumentAnalysisResult]:
-        """Retrieve document analysis job result with all related entities"""
+        """Retrieve document analysis job result with all related entities and interview questions"""
         try:
             # Use joinedload to fetch all related data in one query
             result = (
@@ -509,7 +538,7 @@ class AnalysisRepository:
                     joinedload(DocumentAnalysisDB.key_insights_records),
                 )
                 .filter(
-                    DocumentAnalysisDB.job_id == job_id,
+                    DocumentAnalysisDB.id == job_id,
                     DocumentAnalysisDB.status == "completed",
                 )
                 .first()
@@ -528,7 +557,7 @@ class AnalysisRepository:
     async def get_document_jobs_result(
         self, request: DocumentJobsResultRequest
     ) -> DocumentJobsResultResponse:
-        """Get document job results with filtering, pagination, and related data"""
+        """Get document job results with filtering, pagination, and related data including interview questions"""
         try:
             # Base query with joins
             query = (
@@ -636,7 +665,7 @@ class AnalysisRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[DocumentAnalysisResult], int]:
-        """Search document analyses with advanced filtering"""
+        """Search document analyses with advanced filtering and interview questions"""
         try:
             query = (
                 self.session.query(DocumentAnalysisDB)

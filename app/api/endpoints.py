@@ -385,7 +385,14 @@ async def get_document_job_status(
 ):
     """Get status of a specific document analysis job"""
     try:
-        return await analysis_repository.get_document_job_status(job_id)
+        job_result = await analysis_repository.get_document_job_status(job_id)
+
+        if job_result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document analysis status not found or not completed",
+            )
+        return job_result
     except Exception as e:
         log.error(f"Failed to get document job status: {e}")
         raise HTTPException(

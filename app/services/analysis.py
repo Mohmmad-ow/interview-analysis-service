@@ -78,6 +78,9 @@ class DocumentAnalysisService:
             )
             auditRes = await self.audit_repo.log_audit_event(audit_log)
 
+            
+            
+
             # Check if it's a URL or local file
             if request.file_url.startswith(("http://", "https://")):
                 # URL-based processing - download and parse
@@ -104,10 +107,14 @@ class DocumentAnalysisService:
                 preferred_skills=request.preferred_skills,
             )
 
+            # print the analysis results
+            log_info("Analysis results: {analysis_result}", analysis_result=analysis_result)
+            print(analysis_result["question_for_interview"])
             # Convert the analysis result to proper Pydantic models
             structured_data = StructuredResumeData(**analysis_result["structured_data"])
             score_breakdown = ScoreBreakdown(**analysis_result["score_breakdown"])
             skills_match = SkillsMatch(**analysis_result["skills_match"])
+            questions_for_interview = analysis_result.get("question_for_interview", [])
 
             # Create result object
             result = DocumentAnalysisResult(
@@ -119,6 +126,7 @@ class DocumentAnalysisService:
                 key_insights=analysis_result["key_insights"],
                 processing_time=processing_time,
                 confidence_scores=analysis_result.get("confidence_scores", {}),
+                question_for_interview=questions_for_interview,
             )
 
             # Save to database with completed status
@@ -132,6 +140,7 @@ class DocumentAnalysisService:
                 required_skills=request.required_skills,
                 preferred_skills=request.preferred_skills,
                 analysis_result=result,
+                questions_for_interview=questions_for_interview,
                 status="completed",
             )
 

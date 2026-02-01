@@ -121,6 +121,10 @@ class DocumentAnalysisResult(BaseModel):
     confidence_scores: Dict[str, float] = Field(
         default={}, description="Confidence scores for extracted data"
     )
+    
+    question_for_interview: Optional[List[str]] = Field(
+        default=None, description="Generated interview questions for the candidate"
+    )
 
     class Config:
         schema_extra = {
@@ -153,6 +157,11 @@ class DocumentAnalysisResult(BaseModel):
                     "name_extraction": 0.95,
                     "skills_extraction": 0.88,
                 },
+                "question_for_interview": [
+                    "Can you describe your experience with Python in previous projects?",
+                    "How have you utilized FastAPI in your past work?",
+                    "What strategies do you use to stay updated with new technologies?",
+                ],
             }
         }
 

@@ -106,6 +106,7 @@ class GeminiAnalysis:
                 "languages": ["language1", "language2"],
                 "summary": "professional summary or null"
             }},
+            "question_for_interview": ["question1", "question2", ...] or null,
             "overall_score": 0-100,
             "score_breakdown": {{
                 "skills_score": 0-100,
@@ -134,6 +135,7 @@ class GeminiAnalysis:
         - Experience Score: Relevance and depth of work experience (0-100) 
         - Education Score: Relevance of education background (0-100)
         - Overall Fit: Cultural and role fit based on entire profile (0-100)
+        - Questions for Interview: Generate relevant questions to ask the candidate in an interview based on their resume and job description.
 
         Be objective and focus on factual information from the resume.
         """
