@@ -8,3 +8,8 @@ loguru
 redis
 mysql-connector-python
 python-dotenv
+faster-whisper
+psutil
+aiofiles
+aiohttp
+ffmpeg-python  

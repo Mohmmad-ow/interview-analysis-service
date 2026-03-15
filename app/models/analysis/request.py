@@ -8,6 +8,7 @@ class InterviewAnalysisRequest(BaseModel):
     audio_url: str = Field(
         ..., description="URL for the job interview recording (audio file)"
     )
+    interview_id: str = Field(..., description="Job Id for the go service")
     job_description: str = Field(..., description="Job description for context")
     questions: Optional[List[str]] = Field(
         default=None, description="Specific questions asked in the interview"
@@ -26,6 +27,7 @@ class InterviewAnalysisRequest(BaseModel):
             "examples": [
                 {
                     "audio_url": "https://example.com/interview.mp3",
+                    "interview_id": "some id",
                     "job_description": "Senior Python Developer with FastAPI experience...",
                     "questions": [
                         "What is your experience with microservices?",

@@ -1,5 +1,5 @@
 import time
-from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException
+from fastapi import APIRouter, File, Query, UploadFile, status, Depends, HTTPException
 from app.database.error_logger import error_logger
 from app.database.audit_logger import audit_logger
 from app.database.models import AnalysisResultDB
@@ -10,6 +10,8 @@ from app.models.job.status import (
     JobsStatusResponse,
     RequestJobsStatus,
 )
+from app.services.webhook_service import webhook_service
+from app.database.repository import webhook_repo
 from app.services.GeminiAnalysis import gemini_service
 from app.models import InterviewAnalysisRequest, AnalysisResult, AsyncAnalysisResponse
 from app.services import whisper_service
@@ -77,6 +79,13 @@ async def analyze_interview_async(
         )
 
         # Queue the job
+        deleted = await analysis_repository.delete_analysis_result(request.interview_id)
+        if deleted:
+            log.info(
+                f"Deleted existing analysis result for interview_id: {request.interview_id} to avoid duplicates",
+                user_id=current_user.user_id,
+                tier=current_user.tier,
+            )
         job_id = await analysis_service.queue_analysis_job(request, current_user)
 
         log.info(
@@ -149,18 +158,6 @@ async def admin_get_rate_limit_info(
     return info
 
 
-@router.get("/analyze")
-async def analyze_endpoint(
-    request: InterviewAnalysisRequest,
-    current_user: UserContext = Depends(get_current_user),  # ← INJECTED HERE
-    analysis_service: AnalysisService = Depends(
-        get_analysis_service
-    ),  # ← INJECTED HERE
-):
-    """Endpoint for analysis"""
-    return {"message": "Analysis endpoint"}
-
-
 @router.post(
     "/analyze",
     response_model=AnalysisResult,
@@ -198,7 +195,7 @@ async def analyze_interview(
             user_tier=current_user.tier,
             endpoint="analyze_async",
         )
-
+        analysis_repository.delete_analysis_result(request.interview_id)
         result = await analysis_service.analyze_interview(request, current_user)
         await audit_logger.log_action(
             user_id=current_user.user_id,
@@ -231,6 +228,9 @@ async def process_endpoint(
 ):
     """Endpoint for processing"""
     try:
+        log.info(
+            f"Processing queued jobs for request: {queued_jobs_request}",
+        )
         result = await analysis_service.process_queued_jobs(queued_jobs_request)
         return result
     except Exception as e:
@@ -318,6 +318,7 @@ async def get_job_result_post(
     "/jobs/result/{job_id}",
     tags=["Job Result"],
     description="Get analysis result for a completed job.",
+    status_code=status.HTTP_200_OK,
 )
 async def get_job_result(
     job_id: str,
@@ -348,6 +349,7 @@ async def get_job_result(
     "/process/queued-jobs",
     summary="Process queued analysis jobs",
     description="Start background processing of queued interview analysis jobs",
+    status_code= status.HTTP_202_ACCEPTED, 
 )
 async def process_queued_jobs(
     request: AsyncProcessQueuedJobs,
@@ -386,3 +388,139 @@ async def process_queued_jobs(
 async def get_processor_status():
     """Get current job processor status"""
     return job_processor.get_processing_status()
+
+
+@router.get(
+    "/webhook/status/{job_id}",
+    summary="Get webhook delivery status",
+    description="Check if webhook was delivered successfully for a job",
+    tags=["Webhooks"],
+)
+async def get_webhook_status(
+    job_id: str, current_user: UserContext = Depends(get_current_user)
+):
+    """Get webhook delivery status for a specific job"""
+
+    # Get webhook delivery status
+    status = await webhook_service.get_delivery_status(job_id)
+
+    if not status:
+        # Check if job exists but webhook not created yet
+        job = await analysis_repository.get_analysis_result(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        return {
+            "job_id": job_id,
+            "webhook_status": "not_requested",
+            "message": "This job didn't request a webhook callback",
+            "job_status": job.status,
+        }
+
+    # Add job status for context
+    job = await analysis_repository.get_analysis_result(job_id)
+    if job:
+        status["job_status"] = job.status
+
+    return status
+
+
+@router.get(
+    "/webhook/stats",
+    summary="Get webhook delivery statistics",
+    description="View webhook delivery statistics for the authenticated user",
+    tags=["Webhooks"],
+)
+async def get_webhook_stats(
+    days: int = Query(7, ge=1, le=30),
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get webhook delivery statistics"""
+
+    stats = await webhook_repo.get_webhook_stats(
+        user_id=current_user.user_id, days=days
+    )
+
+    return stats
+
+
+@router.post(
+    "/webhook/retry/{job_id}",
+    summary="Retry failed webhook",
+    description="Manually trigger a retry for a failed webhook",
+    tags=["Webhooks"],
+)
+async def retry_webhook(
+    job_id: str, current_user: UserContext = Depends(get_current_user)
+):
+    """Manually retry a failed webhook"""
+
+    # Get webhook delivery
+
+    delivery = await webhook_repo.get_delivery(job_id)
+    if not delivery:
+        raise HTTPException(
+            status_code=404, detail="No webhook record found for this job"
+        )
+
+    # Check if webhook is retryable
+    if str(delivery.status) == "delivered":
+        return {
+            "message": "Webhook already delivered",
+            "delivered_at": (
+                delivery.delivered_at.isoformat()
+                if delivery.delivered_at is not None
+                else None
+            ),
+        }
+
+    # Get job result
+    job = await analysis_repository.get_analysis_result(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get analysis result if completed
+    analysis_result = None
+    error = None
+    if str(job.status) == "completed":
+        analysis_result = await analysis_repository.parse_analysis_result(job)  # type: ignore
+    elif str(job.status) == "failed":
+        error = "Job processing failed"
+
+    # Trigger webhook
+    result = await webhook_service.send_webhook(
+        callback_url=str(delivery.callback_url),
+        job_id=job_id,
+        status=str(job.status),
+        result=analysis_result,
+        error=error,
+        user_id=current_user.user_id,
+    )
+
+    return {"message": "Webhook retry triggered", "result": result}
+
+
+@router.get(
+    "/admin/webhooks/failed",
+    summary="Admin: List failed webhooks",
+    description="Get all failed webhooks that need attention (admin only)",
+    tags=["Admin"],
+)
+async def list_failed_webhooks(current_user: UserContext = Depends(require_admin)):
+    """List all failed webhooks (admin only)"""
+
+    # Get all failed deliveries
+    failed = await webhook_repo.get_failed_webhooks(limit=50)  # type: ignore
+
+    return [
+        {
+            "job_id": d.job_id,
+            "callback_url": d.callback_url,
+            "attempts": d.attempts,
+            "last_attempt": d.last_attempt.isoformat() if d.last_attempt else None,
+            "error_message": d.error_message,
+            "error_type": d.error_type,
+            "response_status": d.response_status,
+        }
+        for d in failed
+    ]

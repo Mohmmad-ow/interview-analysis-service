@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
+    # Webhook Configuration
+    WEBHOOK_TIMEOUT: int = 30  # seconds
+    WEBHOOK_SECRET: str = "secret_webhook"
+
     # Pydantic V2 style config
     model_config = SettingsConfigDict(
         env_file=".env",

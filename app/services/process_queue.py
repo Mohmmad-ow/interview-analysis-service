@@ -1,13 +1,14 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from app.core.logging import log_info, log_error, log_warning
 from app.database.models import AnalysisResultDB
 from app.models.analysis.request import AsyncProcessQueuedJobs, QueuedJobType
 from app.models.analysis.response import AnalysisResult
 from app.models.audit.request import AuditAction, AuditLog
+from app.services.webhook_service import webhook_service
 from app.services.whisper_service import whisper_service
 from app.services.GeminiAnalysis import gemini_service
 from app.database.repository import analysis_repository, audit_repository
@@ -29,12 +30,15 @@ class JobProcessor:
             raise Exception("Job processor is already running")
 
         self._is_processing = True
-        self._current_batch_id = f"batch_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        self._current_batch_id = (
+            f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        )
 
         try:
             log_info(f"Starting job processing batch: {self._current_batch_id}")
 
             # 1. Fetch jobs based on criteria
+            print(f"Jobs Processing Request {queued_jobs_request}")
             jobs = await self._fetch_jobs(queued_jobs_request)
             if not jobs:
                 log_info("No jobs to process")
@@ -48,6 +52,7 @@ class JobProcessor:
             log_info(
                 f"Found {len(jobs)} jobs to process in batch {self._current_batch_id}"
             )
+            start_time = datetime.now(timezone.utc)
 
             # 2. Process jobs in controlled batches
             results = await self._process_job_batch(jobs)
@@ -58,8 +63,8 @@ class JobProcessor:
                 "processed": len(jobs),
                 "successful": results["successful"],
                 "failed": results["failed"],
-                "start_time": datetime.utcnow().isoformat(),
-                "end_time": datetime.utcnow().isoformat(),
+                "start_time": start_time.isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
             }
 
             log_info(f"Batch {self._current_batch_id} completed: {summary}")
@@ -112,7 +117,7 @@ class JobProcessor:
                 batch_tasks.append(task)
 
             # Wait for batch completion
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            batch_results = asyncio.gather(*batch_tasks, return_exceptions=True)
 
             # Count results
             for job, result in zip(batch, batch_results):
@@ -156,20 +161,19 @@ class JobProcessor:
                 analysis_result=analysis_result,
             )
 
-            # 4. Log successful completion
-            await audit_repository.log_audit_event(
-                AuditLog(
-                    user_id=str(job.user_id),
-                    action=AuditAction.ANALYSIS_COMPLETED,
-                    resource_pattern=str(job.audio_url),
-                    success_only=True,
-                    metadata={
-                        "job_id": job.job_id,
-                        "processing_time": analysis_result.processing_time,
-                        "technical_score": analysis_result.technical_score,
-                    },
-                )
+            log_entry = AuditLog(
+                user_id=str(job.user_id),
+                action=AuditAction.ANALYSIS_COMPLETED,
+                resource_pattern=str(job.audio_url),
+                success_only=True,
+                metadata={
+                    "job_id": job.job_id,
+                    "processing_time": analysis_result.processing_time,
+                    "technical_score": analysis_result.technical_score,
+                },
             )
+            # 4. Log successful completion
+            await audit_repository.log_audit_event(log=log_entry)
 
             log_info(f"Successfully completed job {job.job_id}")
             return analysis_result
@@ -248,6 +252,29 @@ class JobProcessor:
         except Exception as e:
             log_error(f"Analysis pipeline failed for job {job.job_id}: {str(e)}")
             raise e
+        finally:
+            callback_url = getattr(job, "callback_url", None)
+            if callback_url and analysis_result:
+                # ✅ Convert Pydantic model to dict before adding new keys
+                result_data = (
+                    analysis_result.dict()
+                    if hasattr(analysis_result, "dict")
+                    else vars(analysis_result)
+                )
+                result_data["audio_url"] = job.audio_url
+
+                status = "completed"
+
+                asyncio.create_task(
+                    webhook_service.send_webhook(
+                        callback_url=callback_url,
+                        job_id=str(job.job_id),
+                        status=status,
+                        result=result_data,  # Send the dict
+                        error=None,
+                        user_id=str(job.user_id),
+                    )
+                )
 
     def get_processing_status(self) -> Dict[str, Any]:
         """Get current processor status"""

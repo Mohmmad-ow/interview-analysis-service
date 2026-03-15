@@ -68,3 +68,42 @@ class AnalysisResultDB(Base):
 
     def __repr__(self):
         return f"<AnalysisResult {self.job_id} for user {self.user_id}>"
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(100), nullable=False, index=True)
+    callback_url = Column(String(500), nullable=False)
+
+    # Delivery status
+    status = Column(
+        String(20), default="pending"
+    )  # pending, delivered, failed, retrying
+    attempts = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=3)
+
+    # Timing
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_attempt = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+
+    # Response details
+    response_status = Column(Integer, nullable=True)  # HTTP status code from client
+    response_headers = Column(JSON, nullable=True)
+    response_body = Column(Text, nullable=True)  # Truncated response
+
+    # Error details
+    error_type = Column(String(100), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # Payload sent
+    payload_sent = Column(JSON, nullable=True)  # What we sent
+
+    # Metadata
+    next_retry_at = Column(DateTime, nullable=True)
+    created_by = Column(String(50), nullable=True)  # user_id
+
+    def __repr__(self):
+        return f"<WebhookDelivery job={self.job_id} status={self.status}>"

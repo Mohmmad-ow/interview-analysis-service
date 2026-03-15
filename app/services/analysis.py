@@ -26,6 +26,7 @@ from app.models.analysis.request import (
 from app.models.analysis.response import AnalysisResult
 from app.models.auth import UserContext
 from app.core.logging import log, log_error, log_info
+from app.services.webhook_service import webhook_service
 from app.services.whisper_service import whisper_service
 from app.services.GeminiAnalysis import gemini_service
 from app.services.process_queue import job_processor
@@ -47,7 +48,7 @@ class AnalysisService:
     ) -> AnalysisResult:
         """
         Analyze interview - handles both URLs and local files
-        """
+    """
         log_info(
             "Starting analysis",
             user_id=user.user_id,
@@ -56,6 +57,8 @@ class AnalysisService:
             language=request.language,
         )
 
+        interview_id = request.interview_id
+
         start_time = asyncio.get_event_loop().time()
 
         try:
@@ -63,14 +66,16 @@ class AnalysisService:
             # generate a unique job ID
             import uuid
 
-            job_id = f"job_{uuid.uuid4().hex[:12]}"
+            log_info(
+                "Starting analysis", interview_id=interview_id, user_id=user.user_id
+            )
 
             audit_log = AuditLogModel(
                 user_id=user.user_id,
                 action=AuditAction.ANALYSIS_STARTED,
                 resource_pattern=request.audio_url,
                 metadata={
-                    "job_id": job_id,
+                    "job_id": interview_id,
                     "job_description_length": len(request.job_description),
                     "has_questions": bool(request.questions),
                     "language": request.language,
@@ -111,7 +116,7 @@ class AnalysisService:
 
             # 3. Save to database with queued status
             await self.analysis_repo.save_analysis_result(
-                job_id=job_id,
+                job_id=interview_id,
                 user_id=user.user_id,
                 audio_url=request.audio_url,
                 analysis_result=result,
@@ -125,7 +130,19 @@ class AnalysisService:
             await self.audit_repo.update_job_status(
                 int(audit_id), AuditAction.ANALYSIS_COMPLETED  # type: ignore
             )
-            log.info(f"Successfully processed job {job_id} for user {user.user_id}")
+
+            if request.callback_url:
+                await webhook_service.send_webhook(
+                    callback_url=request.callback_url,
+                    job_id=interview_id,
+                    status="completed",
+                    result=result,
+                    user_id=user.user_id,
+                )
+
+            log.info(
+                f"Successfully processed job {interview_id} for user {user.user_id}"
+            )
             return result
 
         except Exception as e:
@@ -136,6 +153,16 @@ class AnalysisService:
                 error=str(e),
                 processing_time=processing_time,
             )
+            log_error("Analysis failed", interview_id=interview_id, error=str(e))
+            if request.callback_url:
+                await webhook_service.send_webhook(
+                    callback_url=request.callback_url,
+                    job_id=interview_id,
+                    result={},
+                    status="failed",
+                    error=str(e),
+                    user_id=user.user_id,
+                )
             raise
 
     async def _generate_analysis(self, transcript: str, job_description: str) -> dict:
@@ -164,7 +191,7 @@ class AnalysisService:
         """
         import uuid
 
-        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        interview_id = request.interview_id
 
         try:
             # 1. Create audit log
@@ -173,7 +200,7 @@ class AnalysisService:
                 action=AuditAction.JOB_CREATED,
                 resource_pattern=request.audio_url,
                 metadata={
-                    "job_id": job_id,
+                    "job_id": interview_id,
                     "job_description_length": len(request.job_description),
                     "has_questions": bool(request.questions),
                     "language": request.language,
@@ -194,7 +221,7 @@ class AnalysisService:
 
             # 3. Save to database with queued status
             await self.analysis_repo.save_analysis_result(
-                job_id=job_id,
+                job_id=interview_id,
                 user_id=user.user_id,
                 audio_url=request.audio_url,
                 analysis_result=queued_result,
@@ -204,11 +231,11 @@ class AnalysisService:
                 questions=request.questions,
             )
 
-            log.info(f"Successfully queued job {job_id} for user {user.user_id}")
-            return job_id
+            log.info(f"Successfully queued job {interview_id} for user {user.user_id}")
+            return interview_id
 
         except Exception as e:
-            log.error(f"Failed to queue job {job_id}: {e}")
+            log.error(f"Failed to queue job {interview_id}: {e}")
             raise
 
     async def analyze_interview_file(

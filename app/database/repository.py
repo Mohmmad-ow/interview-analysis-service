@@ -1,9 +1,11 @@
+from aiohttp import web
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from app.database.models import AnalysisResultDB, AuditLog, ErrorLog
+from app.database.models import AnalysisResultDB, AuditLog, ErrorLog, WebhookDelivery
 from app.models import analysis
 from app.models.analysis.response import AnalysisResult
-from typing import Optional, List, Dict
-from datetime import datetime, timedelta
+from typing import Any, Optional, List, Dict
+from datetime import datetime, timedelta, timezone
 from app.database.connection import db_manager
 from app.models.audit.request import AuditLog as AuditLogModel
 from app.models.job.status import (
@@ -52,6 +54,16 @@ class AnalysisRepository:
         self.session.commit()
         self.session.refresh(db_result)
         return db_result
+    
+    async def delete_analysis_result(self, job_id: str) -> bool:
+        """Delete analysis result by job ID"""
+        result = (
+            self.session.query(AnalysisResultDB)
+            .filter(AnalysisResultDB.job_id == job_id)
+            .delete()
+        )
+        self.session.commit()
+        return result > 0
 
     async def get_analysis_result(self, job_id: str) -> Optional[AnalysisResultDB]:
         """Get analysis result by job ID"""
@@ -339,7 +351,7 @@ class AuditRepository:
         self.session.refresh(AuditLogEntry)
         return AuditLogEntry
 
-    def log_error(
+    async def log_error(
         self,
         user_id: str,
         job_id: str,
@@ -365,10 +377,140 @@ class AuditRepository:
         return error_log
 
 
-# Initialize repositories with a session
+# app/database/repository.py - add to AuditRepository or create new
+
+
+class WebhookRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    async def create_delivery_record(
+        self,
+        job_id: str,
+        callback_url: str,
+        user_id: Optional[str] = None,
+        max_attempts: int = 3,
+    ) -> WebhookDelivery:
+        """Create a new webhook delivery record"""
+        delivery = WebhookDelivery(
+            job_id=job_id,
+            callback_url=callback_url,
+            status="pending",
+            max_attempts=max_attempts,
+            created_by=user_id,
+        )
+        self.session.add(delivery)
+        self.session.commit()
+        self.session.refresh(delivery)
+        return delivery
+
+    async def get_delivery(self, job_id: str) -> Optional[WebhookDelivery]:
+        """Get webhook delivery record by job ID"""
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(WebhookDelivery.job_id == job_id)
+            .first()
+        )
+
+    async def update_delivery_attempt(
+        self,
+        job_id: str,
+        attempt_number: int,
+        status: str,
+        response_status: Optional[int] = None,
+        response_headers: Optional[Dict] = None,
+        response_body: Optional[str] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+    ) -> bool:
+        """Update webhook delivery after an attempt"""
+        delivery = self.session.execute(
+            update(WebhookDelivery)
+            .where(WebhookDelivery.job_id == job_id)
+            .values(
+                attempts=attempt_number if attempt_number else WebhookDelivery.attempts,
+                last_attempt=(
+                    datetime.now(timezone.utc)
+                    if attempt_number
+                    else WebhookDelivery.last_attempt
+                ),
+                status=status if status else WebhookDelivery.status,
+                response_status=(
+                    response_status
+                    if response_status
+                    else WebhookDelivery.response_status
+                ),
+                response_headers=(
+                    response_headers
+                    if response_headers
+                    else WebhookDelivery.response_headers
+                ),
+                response_body=response_body[:1000] if response_body else None,
+                error_message=(
+                    error_message if error_message else WebhookDelivery.error_message
+                ),
+                error_type=error_type if error_type else WebhookDelivery.error_type,
+            )
+        )
+
+        self.session.commit()
+        return True
+
+    async def get_pending_retries(self) -> List[WebhookDelivery]:
+        """Get webhooks that need retry"""
+        now = datetime.utcnow()
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(
+                WebhookDelivery.status.in_(["failed", "retrying"]),
+                WebhookDelivery.attempts < WebhookDelivery.max_attempts,
+                WebhookDelivery.next_retry_at <= now,
+            )
+            .all()
+        )
+
+    async def get_webhook_stats(
+        self, user_id: Optional[str] = None, days: int = 7
+    ) -> Dict[str, Any]:
+        """Get webhook delivery statistics"""
+        query = self.session.query(WebhookDelivery)
+
+        if user_id:
+            query = query.filter(WebhookDelivery.created_by == user_id)
+
+        # Filter by date
+        since = datetime.utcnow() - timedelta(days=days)
+        query = query.filter(WebhookDelivery.created_at >= since)
+
+        total = query.count()
+        delivered = query.filter(WebhookDelivery.status == "delivered").count()
+        failed = query.filter(WebhookDelivery.status == "failed").count()
+        pending = query.filter(WebhookDelivery.status == "pending").count()
+
+        # Calculate success rate
+        success_rate = (delivered / total * 100) if total > 0 else 0
+
+        return {
+            "total": total,
+            "delivered": delivered,
+            "failed": failed,
+            "pending": pending,
+            "success_rate": round(success_rate, 2),
+            "period_days": days,
+        }
+
+    def get_failed_webhooks(self, limit: int = 50) -> List[WebhookDelivery]:
+        """Get recent failed webhooks"""
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(WebhookDelivery.status == "failed")
+            .order_by(WebhookDelivery.last_attempt.desc())
+            .limit(limit)
+            .all()
+        )
 
 
 session = db_manager.SessionLocal()
-
+webhook_repo = WebhookRepository(session)
 analysis_repository = AnalysisRepository(session)
 audit_repository = AuditRepository(session)

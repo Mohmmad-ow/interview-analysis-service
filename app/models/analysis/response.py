@@ -68,3 +68,37 @@ class QuestionAnalysis(BaseModel):
     confidence_level: str = Field(
         ..., pattern="^(high|medium|low)$", description="Overall confidence assessment"
     )
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str = Field(..., description="Unique identifier for the analysis job")
+    status: str = Field(
+        ...,
+        description="Current status of the analysis job",
+    )
+    result: Optional[AnalysisResult] = Field(
+        default=None, description="Analysis result if job is completed"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if job failed"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "job_123456",
+                    "status": "completed",
+                    "result": {
+                        "transcript": "the transcript of the interview",
+                        "technical_score": 7.5,
+                        "communication_score": 6.4,
+                        "confidence_indicators": {"straight speech": 9.4},
+                        "key_insights": ["Great Technical Knowledge"],
+                        "processing_time": 65,
+                    },
+                    "error": None,
+                }
+            ]
+        }
+    }
