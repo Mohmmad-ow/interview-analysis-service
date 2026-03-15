@@ -1,7 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from enum import Enum
 
@@ -10,6 +10,7 @@ from app.database.models import DocumentAnalysisDB
 from app.models.analysis.request import AsyncProcessQueuedJobs, QueuedJobType
 from app.models.analysis.response import DocumentAnalysisResult
 from app.models.audit.request import AuditAction, AuditLog
+from app.services.webhook_service import document_webhook_service
 from app.services.GeminiAnalysis import gemini_service
 from app.services.analysis import document_analysis_service
 from app.database.repository import analysis_repository, audit_repository
@@ -234,6 +235,26 @@ class JobProcessor:
                 },
             )
             raise e
+        finally:
+        # ALWAYS send webhook, even on failure
+            callback_url = getattr(job, "callback_url", None)
+            if callback_url:
+                status = "completed" if analysis_result else "failed"
+                
+                # Send webhook in background (fire and forget)
+                asyncio.create_task(
+                    document_webhook_service.send_webhook(
+                        callback_url=callback_url,
+                        job_id=str(job.job_id),
+                        status=status,
+                        result=analysis_result,
+                        error=str(e) if not analysis_result else None,
+                        user_id=str(job.user_id),
+                    )
+                )
+                log_info(f"📤 Webhook scheduled for job {job.job_id}")
+
+
 
     def get_processing_status(self) -> Dict[str, Any]:
         """Get current processor status"""
@@ -242,7 +263,7 @@ class JobProcessor:
             "current_batch_id": self._current_batch_id,
             "current_job_type": self._current_job_type,
             "max_concurrent_jobs": self.max_concurrent_jobs,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
 

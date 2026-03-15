@@ -21,6 +21,7 @@ class GeminiAnalysis:
 
     def _initialize_client(self):
         """Initialize Gemini client with API key"""
+        logger.info("Initializing Gemini client: {model} with API key: {api_key}", model=self.model, api_key=self.api_key)
         try:
             self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
             logger.info("Gemini client initialized successfully")

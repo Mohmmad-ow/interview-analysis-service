@@ -30,6 +30,7 @@ class DocumentAnalysisRequest(BaseModel):
     callback_url: Optional[str] = Field(
         None, description="Webhook URL for async processing"
     )
+    go_job_posting_id: Optional[str] = Field(None, description="The UUID of the job posting in the Go backend")
 
     class Config:
         schema_extra = {
@@ -41,6 +42,7 @@ class DocumentAnalysisRequest(BaseModel):
                 "file_type": "pdf",
                 "language": "en",
                 "callback_url": "https://example.com/webhook",
+                "go_job_posting_id": "sdfklj-sdf93-sdf23d-23sdfsd"
             }
         }
 

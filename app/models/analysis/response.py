@@ -125,6 +125,9 @@ class DocumentAnalysisResult(BaseModel):
     question_for_interview: Optional[List[str]] = Field(
         default=None, description="Generated interview questions for the candidate"
     )
+    
+    go_job_posting_id: Optional[str] = Field(default=None, description="id for the job in golang")
+    resume_url: Optional[str] = Field(default=None, description="C:\Games\Storage\v1\a4cade3e-be10-431b-b943-f9da88606d67\resume 2024.pdf")
 
     class Config:
         schema_extra = {
@@ -162,6 +165,8 @@ class DocumentAnalysisResult(BaseModel):
                     "How have you utilized FastAPI in your past work?",
                     "What strategies do you use to stay updated with new technologies?",
                 ],
+                "go_job_posting_id": "4de68d8d-f192-4735-9e3c-294240cbbc9e",
+                "resume_url": "C:\\Games\\Storage\\v1\\a4cade3e-be10-431b-b943-f9da88606d67\\resume 2024.pdf"
             }
         }
 

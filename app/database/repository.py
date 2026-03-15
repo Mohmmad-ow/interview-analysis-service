@@ -1,8 +1,10 @@
 from datetime import timezone, datetime, timedelta
 import json
+import re
 from httpcore import stream
-from sqlalchemy.orm import Session
-from app.core.logging import log_error
+from sqlalchemy import or_, update
+from sqlalchemy.orm import Session, joinedload, contains_eager
+from app.core.logging import log_error, log_info
 from app.database.models import (
     AuditLog,
     DocumentEducationDB,
@@ -12,6 +14,7 @@ from app.database.models import (
     DocumentWorkExperienceDB,
     ErrorLog,
     DocumentAnalysisDB,
+    WebhookDelivery
 )  # ADD DocumentAnalysisDB
 from app.models import analysis
 from app.models.analysis.response import (
@@ -20,7 +23,7 @@ from app.models.analysis.response import (
     SkillsMatch,
     StructuredResumeData,
 )  # ADD DocumentAnalysisResult
-from typing import Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple
 from app.database.connection import db_manager
 from app.models.audit.request import AuditLog as AuditLogModel
 from app.models.job.status import (
@@ -33,8 +36,6 @@ from app.models.job.status import (
     JobsStatusResponse,
     RequestJobsStatus,
 )
-from sqlalchemy.orm import joinedload, contains_eager
-from sqlalchemy import or_, and_
 
 # app/database/repository.py - Improved document methods
 
@@ -55,6 +56,7 @@ class AnalysisRepository:
         callback_url: Optional[str],
         required_skills: Optional[List[str]],
         preferred_skills: Optional[List[str]],
+        go_job_posting_id: str,
         analysis_result: DocumentAnalysisResult,
         questions_for_interview: Optional[List[str]] = None,
         status: str = "completed",
@@ -68,10 +70,12 @@ class AnalysisRepository:
                 user_id=user_id,
                 file_url=file_url,
                 file_type=file_type,
+                callback_url=callback_url,
                 extracted_text=analysis_result.extracted_text,
                 candidate_questions=(
                     json.dumps(questions_for_interview) if questions_for_interview else None
                 ),
+                go_job_posting_id=go_job_posting_id,
                 candidate_name=(
                     analysis_result.structured_data.name
                     if analysis_result.structured_data
@@ -201,6 +205,7 @@ class AnalysisRepository:
         """Robust parsing with proper error handling and interview questions"""
         try:
             # Eager load all related data
+            
             education_records = await self._get_education_for_document(str(result.id))
             work_records = await self._get_work_experience_for_document(str(result.id))
             skill_records = await self._get_skills_for_document(str(result.id))
@@ -211,9 +216,9 @@ class AnalysisRepository:
             
             # Parse interview questions
             questions_for_interview = None
-            if result.candidate_questions != None:
+            if result.candidate_questions != None: # type: ignore
                 try:
-                    questions_for_interview = json.loads(result.candidate_questions)
+                    questions_for_interview = json.loads(result.candidate_questions) # type: ignore
                 except (json.JSONDecodeError, TypeError):
                     questions_for_interview = None
 
@@ -264,8 +269,11 @@ class AnalysisRepository:
 
             # Build key insights
             key_insights = [str(insight.insight_text) for insight in insights_records]
-
+            resume_url = self.strip_to_volume(str(result.file_url))
+            log_info("Resume URL: " + resume_url)
             return DocumentAnalysisResult(
+                go_job_posting_id=str(result.go_job_posting_id),
+                resume_url=resume_url,
                 extracted_text=str(result.extracted_text) or "",
                 structured_data=structured_data,
                 overall_score=float(result.overall_score) or 0.0,  # type: ignore
@@ -300,6 +308,23 @@ class AnalysisRepository:
             }
             for record in records
         ]
+    def strip_to_volume(self,path: str):
+        """
+        Removes all leading path components up to and including the volume marker.
+        
+        The volume marker is expected to be a folder name like 'v1', 'v2', ... 'v100'.
+        
+        Args:
+            path (str): Original file path (e.g., r"C:\Games\Storage\v1\...\file.pdf")
+        
+        Returns:
+            str: Path starting from the volume marker (e.g., "v1\...\file.pdf")
+        """
+        parts = path.split('\\')
+        for i, part in enumerate(parts):
+            if re.fullmatch(r'v\d+', part):          # matches exactly 'v' followed by digits
+                return '\\'.join(parts[i:])
+        return path   # fallback (or you could raise an exception)
 
     async def _get_work_experience_for_document(self, document_id: str) -> List[Dict]:
         records = (
@@ -351,9 +376,9 @@ class AnalysisRepository:
     ) -> DocumentAnalysisResult:
         """Create a safe default result when parsing fails"""
         questions_for_interview = None
-        if result.candidate_questions != None:
+        if result.candidate_questions != None: # type: ignore
             try:
-                questions_for_interview: List[str] | None = json.loads(result.candidate_questions)
+                questions_for_interview: List[str] | None = json.loads(result.candidate_questions) # type: ignore
             except (json.JSONDecodeError, TypeError):
                 questions_for_interview = None
         
@@ -789,10 +814,136 @@ class AuditRepository:
         return error_log
 
 
-# Initialize repositories with a session
+
+
+
+class WebhookRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    async def create_delivery_record(
+        self,
+        job_id: str,
+        callback_url: str,
+        user_id: Optional[str] = None,
+        max_attempts: int = 3,
+    ) -> WebhookDelivery:
+        """Create a new webhook delivery record"""
+        delivery = WebhookDelivery(
+            job_id=job_id,
+            callback_url=callback_url,
+            status="pending",
+            max_attempts=max_attempts,
+            created_by=user_id,
+        )
+        self.session.add(delivery)
+        self.session.commit()
+        self.session.refresh(delivery)
+        return delivery
+
+    async def get_delivery(self, job_id: str) -> Optional[WebhookDelivery]:
+        """Get webhook delivery record by job ID"""
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(WebhookDelivery.job_id == job_id)
+            .first()
+        )
+
+    async def update_delivery_attempt(
+        self,
+        job_id: str,
+        attempt_number: int,
+        status: str,
+        response_status: Optional[int] = None,
+        response_headers: Optional[Dict] = None,
+        response_body: Optional[str] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+    ) -> bool:
+        """Update webhook delivery after an attempt"""
+        delivery = self.session.execute(
+            update(WebhookDelivery)
+            .where(WebhookDelivery.job_id == job_id)
+            .values(
+                attempts=attempt_number,
+                last_attempt=datetime.now(timezone.utc),
+                status=status,
+                response_status=response_status,
+                response_headers=response_headers,
+                response_body=response_body[:1000] if response_body else None,
+                error_message=error_message,
+                error_type=error_type,
+                delivered_at=datetime.now(timezone.utc) if status == "delivered" else None,
+                next_retry_at=self._calculate_next_retry(attempt_number) if status == "retrying" else None,
+            )
+        )
+
+        self.session.commit()
+        return True
+
+    def _calculate_next_retry(self, attempt: int) -> datetime:
+        """Calculate next retry time with exponential backoff"""
+        delays = [60, 300, 900]  # 1 min, 5 min, 15 min
+        delay = delays[min(attempt - 1, len(delays) - 1)]
+        return datetime.now(timezone.utc) + timedelta(seconds=delay)
+
+    async def get_pending_retries(self) -> List[WebhookDelivery]:
+        """Get webhooks that need retry"""
+        now = datetime.now(timezone.utc)
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(
+                WebhookDelivery.status.in_(["failed", "retrying"]),
+                WebhookDelivery.attempts < WebhookDelivery.max_attempts,
+                WebhookDelivery.next_retry_at <= now,
+            )
+            .all()
+        )
+
+    async def get_webhook_stats(
+        self, user_id: Optional[str] = None, days: int = 7
+    ) -> Dict[str, Any]:
+        """Get webhook delivery statistics"""
+        query = self.session.query(WebhookDelivery)
+
+        if user_id:
+            query = query.filter(WebhookDelivery.created_by == user_id)
+
+        # Filter by date
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        query = query.filter(WebhookDelivery.created_at >= since)
+
+        total = query.count()
+        delivered = query.filter(WebhookDelivery.status == "delivered").count()
+        failed = query.filter(WebhookDelivery.status == "failed").count()
+        pending = query.filter(WebhookDelivery.status == "pending").count()
+        retrying = query.filter(WebhookDelivery.status == "retrying").count()
+
+        # Calculate success rate
+        success_rate = (delivered / total * 100) if total > 0 else 0
+
+        return {
+            "total": total,
+            "delivered": delivered,
+            "failed": failed,
+            "pending": pending,
+            "retrying": retrying,
+            "success_rate": round(success_rate, 2),
+            "period_days": days,
+        }
+
+    async def get_failed_webhooks(self, limit: int = 50) -> List[WebhookDelivery]:
+        """Get recent failed webhooks"""
+        return (
+            self.session.query(WebhookDelivery)
+            .filter(WebhookDelivery.status == "failed")
+            .order_by(WebhookDelivery.last_attempt.desc())
+            .limit(limit)
+            .all()
+        )
 
 
 session = db_manager.SessionLocal()
-
+webhook_repository = WebhookRepository(session)
 analysis_repository = AnalysisRepository(session)
 audit_repository = AuditRepository(session)

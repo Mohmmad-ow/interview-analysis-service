@@ -3,6 +3,7 @@ Document analysis service - adapted from interview analysis
 """
 
 import asyncio
+import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -30,7 +31,7 @@ from app.core.logging import log, log_error, log_info
 from app.models.job.status import DocumentJobsResultRequest, DocumentJobsResultResponse
 from app.services.document_parser import document_parser
 from app.services.GeminiAnalysis import gemini_service
-
+from app.services.webhook_service import document_webhook_service
 
 class DocumentAnalysisService:
     """
@@ -42,6 +43,24 @@ class DocumentAnalysisService:
         self.audit_repo = audit_repo
         self.gemini_service = gemini_service
         self.document_parser = document_parser
+    
+    def strip_to_volume(self,path: str):
+        """
+        Removes all leading path components up to and including the volume marker.
+        
+        The volume marker is expected to be a folder name like 'v1', 'v2', ... 'v100'.
+        
+        Args:
+            path (str): Original file path (e.g., r"C:\Games\Storage\v1\...\file.pdf")
+        
+        Returns:
+            str: Path starting from the volume marker (e.g., "v1\...\file.pdf")
+        """
+        parts = path.split('\\')
+        for i, part in enumerate(parts):
+            if re.fullmatch(r'v\d+', part):          # matches exactly 'v' followed by digits
+                return '\\'.join(parts[i:])
+        return path   # fallback (or you could raise an exception)
 
     async def analyze_document(
         self,
@@ -93,12 +112,14 @@ class DocumentAnalysisService:
                 )
             else:
                 # Local file processing
+                log.info("Starting to analyze local file.")
                 extracted_text, processing_time = (
                     await self.document_parser.parse_local_file(
                         request.file_url, file_type=request.file_type.value
                     )
                 )
 
+            log.info("Starting to Analyze Extracted text via Gemini.")
             # Generate analysis results using Gemini
             analysis_result = await self.gemini_service.analyze_document(
                 extracted_text=extracted_text,
@@ -106,7 +127,6 @@ class DocumentAnalysisService:
                 required_skills=request.required_skills,
                 preferred_skills=request.preferred_skills,
             )
-
             # print the analysis results
             log_info("Analysis results: {analysis_result}", analysis_result=analysis_result)
             print(analysis_result["question_for_interview"])
@@ -127,6 +147,7 @@ class DocumentAnalysisService:
                 processing_time=processing_time,
                 confidence_scores=analysis_result.get("confidence_scores", {}),
                 question_for_interview=questions_for_interview,
+                resume_url=self.strip_to_volume(request.file_url)
             )
 
             # Save to database with completed status
@@ -142,7 +163,18 @@ class DocumentAnalysisService:
                 analysis_result=result,
                 questions_for_interview=questions_for_interview,
                 status="completed",
+                go_job_posting_id=request.go_job_posting_id # type: ignore
             )
+            
+            if request.callback_url:
+                log.info(f"Sending webhook for job {job_id} to {request.callback_url}")
+                await document_webhook_service.send_webhook(
+                    callback_url=request.callback_url,
+                    job_id=job_id,
+                    status="completed",
+                    go_job_posting_id=request.go_job_posting_id, # type: ignore
+                    result=result,
+                )
 
             audit_id = auditRes.id
             await self.audit_repo.update_job_status(
@@ -204,6 +236,7 @@ class DocumentAnalysisService:
                 callback_url=request.callback_url,
                 required_skills=request.required_skills,
                 preferred_skills=request.preferred_skills,
+                go_job_posting_id=request.go_job_posting_id, # type: ignore
                 analysis_result=DocumentAnalysisResult(
                     confidence_scores={},
                     extracted_text="",

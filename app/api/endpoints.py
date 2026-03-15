@@ -1,6 +1,6 @@
 import time
 from fastapi import APIRouter, File, UploadFile, status, Depends, HTTPException, Form
-from typing import Optional, List
+from typing import Optional, List, Annotated
 import json
 
 from fastapi.params import Query
@@ -36,7 +36,7 @@ from app.api.dependencies import (
     require_admin,
 )
 from app.services.process_queue import job_processor
-from app.database.repository import analysis_repository, audit_repository
+from app.database.repository import analysis_repository, audit_repository, webhook_repository as webhook_repo
 from app.core.logging import log, log_error
 
 # Create router instance
@@ -104,7 +104,7 @@ async def analyze_document_sync(
             user_tier=current_user.tier,
             endpoint="analyze_document_sync",
         )
-
+        
         result = await document_analysis_service.analyze_document(request, current_user)
         await audit_logger.log_action(
             user_id=current_user.user_id,
@@ -342,6 +342,7 @@ async def upload_and_analyze_document(
                 file_type=file_type,
                 language=language,
                 callback_url=callback_url,
+                go_job_posting_id=""
             )
 
             # Analyze the document
@@ -653,3 +654,137 @@ async def get_document_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get document statistics",
         )
+
+# app/api/routers/documents.py - Add these endpoints
+
+@router.get(
+    "/webhook/status/{job_id}",
+    summary="Get webhook delivery status",
+    description="Check if webhook was delivered successfully for a document analysis job",
+    tags=["Webhooks"],
+)
+async def get_webhook_status(
+    job_id: str, 
+    current_user: UserContext = Depends(get_current_user)
+):
+    """Get webhook delivery status for a specific document analysis job"""
+    from app.services.webhook_service import document_webhook_service
+    from app.database.repository import analysis_repository
+
+    # Get webhook delivery status
+    status = await document_webhook_service.get_delivery_status(job_id)
+
+    if not status:
+        # Check if job exists but webhook not created yet
+        job = await analysis_repository.get_document_job_result(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        return {
+            "job_id": job_id,
+            "webhook_status": "not_requested",
+            "message": "This job didn't request a webhook callback",
+        }
+
+    # Add job status for context
+    job = await analysis_repository.get_document_job_result(job_id)
+    return status
+
+
+@router.get(
+    "/webhook/stats",
+    summary="Get webhook delivery statistics",
+    description="View webhook delivery statistics for document analysis jobs",
+    tags=["Webhooks"],
+)
+async def get_webhook_stats(
+    days: int = Query(7, ge=1, le=30), # type: ignore
+    current_user: UserContext = Depends(get_current_user),
+):
+    """Get webhook delivery statistics"""
+    stats = await webhook_repo.get_webhook_stats(
+        user_id=current_user.user_id, days=int(days)
+    )
+
+    return stats
+
+
+@router.post(
+    "/webhook/retry/{job_id}",
+    summary="Retry failed webhook",
+    description="Manually trigger a retry for a failed webhook",
+    tags=["Webhooks"],
+)
+async def retry_webhook(
+    job_id: str, 
+    current_user: UserContext = Depends(get_current_user)
+):
+    """Manually retry a failed webhook"""
+    from app.services.webhook_service import document_webhook_service
+    from app.database.repository import webhook_repository as webhook_repo, analysis_repository
+
+    # Get webhook delivery
+    delivery = await webhook_repo.get_delivery(job_id)
+    if not delivery:
+        raise HTTPException(
+            status_code=404, detail="No webhook record found for this job"
+        )
+
+    # Check if webhook is retryable
+    if str(delivery.status) == "delivered":
+        return {
+            "message": "Webhook already delivered",
+            "delivered_at": (
+                delivery.delivered_at.isoformat()
+                if delivery.delivered_at is not None
+                else None
+            ),
+        }
+
+    # Get job result
+    job = await analysis_repository.get_document_job_result(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get analysis result if completed
+    analysis_result = await analysis_repository.get_document_job_result(job_id)
+
+
+    # Trigger webhook
+    result = await document_webhook_service.send_webhook(
+        callback_url=str(delivery.callback_url),
+        job_id=job_id,
+        status="retry",
+        result=analysis_result,
+        go_job_posting_id=job.go_job_posting_id, # type: ignore
+        error=None,
+        user_id=current_user.user_id,
+    )
+
+    return {"message": "Webhook retry triggered", "result": result}
+
+
+@router.get(
+    "/admin/webhooks/failed",
+    summary="Admin: List failed webhooks",
+    description="Get all failed webhooks that need attention (admin only)",
+    tags=["Admin"],
+)
+async def list_failed_webhooks(current_user: UserContext = Depends(require_admin)):
+    """List all failed webhooks (admin only)"""
+
+    # Get all failed deliveries
+    failed = await webhook_repo.get_failed_webhooks(limit=50)
+
+    return [
+        {
+            "job_id": d.job_id,
+            "callback_url": d.callback_url,
+            "attempts": d.attempts,
+            "last_attempt": d.last_attempt.isoformat() if d.last_attempt else None, # type: ignore
+            "error_message": d.error_message,
+            "error_type": d.error_type,
+            "response_status": d.response_status,
+        }
+        for d in failed
+    ]
